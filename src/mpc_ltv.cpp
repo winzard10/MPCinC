@@ -47,7 +47,8 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     // Decision vector z = [x0..xN, u0..uN-1]
     const int NX = (N+1)*nx;
     const int NU = N*nu;
-    const int NZ = NX + NU;
+    const int NS = 2*(N+1);
+    const int NZ = NX + NU + NS;
 
     // ---------- Cost ----------
     std::vector<Triplet<double>> Ht;
@@ -56,11 +57,16 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     auto idx_x = [&](int k,int i){ return k*nx + i; };       // state
     auto idx_u = [&](int k,int j){ return NX + k*nu + j; };  // input
 
+    auto idx_sig_ey    = [&](int k){ return NX + NU + (2*k + 0); };
+    auto idx_sig_delta = [&](int k){ return NX + NU + (2*k + 1); };
+
     for (int k=0;k<N;++k){
         // state tracking
         Ht.emplace_back(idx_x(k,0), idx_x(k,0), P.wy);
         Ht.emplace_back(idx_x(k,1), idx_x(k,1), P.wpsi);
         Ht.emplace_back(idx_x(k,2), idx_x(k,2), P.wv);
+        Ht.emplace_back(idx_sig_ey(k),    idx_sig_ey(k),    P.w_sigma_ey);
+        Ht.emplace_back(idx_sig_delta(k), idx_sig_delta(k), P.w_sigma_delta);
         g(idx_x(k,2)) += -2.0 * P.wv * ref.hp[k].v_ref; // linear term for v_ref
 
         // input effort
@@ -178,39 +184,91 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
         lb(idx_u(k,1)) = -P.ddelta_max;
         ub(idx_u(k,1)) =  P.ddelta_max;
     }
-    // states: speed & steering angle
+    // speed (hard bounds)
     for (int k=0;k<=N;++k){
         lb(idx_x(k,2)) = P.v_min;
         ub(idx_x(k,2)) = P.v_max;
-        lb(idx_x(k,3)) = -P.delta_max;
-        ub(idx_x(k,3)) =  P.delta_max;
     }
 
-    // Build combined constraint matrix A and bounds:
-    // Equality rows (Aeq), plus identity rows for lb <= z <= ub
-    const int m = meq + NZ;
-    std::vector<Triplet<double>> At;
-    At.reserve(Aeq.nonZeros() + NZ);
+    // ey, delta: leave infinite (soft constraints below)
 
-    // Copy Aeq
+    // slacks must be nonnegative
+    for (int k=0;k<=N;++k){
+        lb[idx_sig_ey(k)]    = 0.0;  // 0 <= sigma
+        lb[idx_sig_delta(k)] = 0.0;
+        // ub already +inf
+
+    // ---------- Build combined constraint matrix A and bounds ----------
+    // Rows = equalities (meq) + soft ey (2*(N+1)) + soft delta (2*(N+1)) + identity for variable bounds (NZ)
+    const int m_soft_ey    = 2*(N+1);
+    const int m_soft_delta = 2*(N+1);
+    const int m = meq + m_soft_ey + m_soft_delta + NZ;
+
+    std::vector<Triplet<double>> At;
+    At.reserve(Aeq.nonZeros() + m_soft_ey*3 + m_soft_delta*3 + NZ);
+
+    // 1) copy Aeq (equalities)
     for (int col=0; col<Aeq.outerSize(); ++col){
         for (SparseMatrix<double>::InnerIterator it(Aeq,col); it; ++it){
             At.emplace_back(it.row(), it.col(), it.value());
         }
     }
-    // Identity for variable bounds
-    for (int i=0;i<NZ;++i){
-        At.emplace_back(meq + i, i, 1.0);
+
+    // 2) soft inequalities for ey and delta
+    int row = meq;
+
+    // ey_k - sigma_ey_k <= ey_max
+    for (int k=0; k<=N; ++k, ++row){
+        At.emplace_back(row, idx_x(k,0),    1.0);  // + ey_k
+        At.emplace_back(row, idx_sig_ey(k), -1.0); // - sigma_ey_k
     }
+    // -ey_k - sigma_ey_k <= ey_max
+    for (int k=0; k<=N; ++k, ++row){
+        At.emplace_back(row, idx_x(k,0),   -1.0);  // - ey_k
+        At.emplace_back(row, idx_sig_ey(k), -1.0); // - sigma_ey_k
+    }
+
+    // delta_k - sigma_delta_k <= delta_max
+    for (int k=0; k<=N; ++k, ++row){
+        At.emplace_back(row, idx_x(k,3),        1.0);  // + delta_k
+        At.emplace_back(row, idx_sig_delta(k), -1.0);  // - sigma_delta_k
+    }
+    // -delta_k - sigma_delta_k <= delta_max
+    for (int k=0; k<=N; ++k, ++row){
+        At.emplace_back(row, idx_x(k,3),       -1.0);  // - delta_k
+        At.emplace_back(row, idx_sig_delta(k), -1.0);  // - sigma_delta_k
+    }
+
+    // 3) identity rows to impose variable simple bounds (lb <= z <= ub)
+    for (int i=0; i<NZ; ++i, ++row){
+        At.emplace_back(row, i, 1.0);
+    }
+    assert(row == m);
 
     SparseMatrix<double> A(m, NZ);
     A.setFromTriplets(At.begin(), At.end());
 
+    // Bounds vectors
     VectorXd l(m), u(m);
-    // Equalities: l = u = beq
+
+    // equalities: l = u = beq
     l.head(meq) = beq;
     u.head(meq) = beq;
-    // Variable bounds: lb <= I*z <= ub
+
+    // soft ey rows (upper = ey_max, lower = -inf)
+    int offs = meq;
+    for (int k=0; k<=N; ++k) { l(offs+k) = -OSQP_INFTY; u(offs+k) =  P.ey_max; }
+    offs += (N+1);
+    for (int k=0; k<=N; ++k) { l(offs+k) = -OSQP_INFTY; u(offs+k) =  P.ey_max; }
+    offs += (N+1);
+
+    // soft delta rows (upper = delta_max, lower = -inf)
+    for (int k=0; k<=N; ++k) { l(offs+k) = -OSQP_INFTY; u(offs+k) =  P.delta_max; }
+    offs += (N+1);
+    for (int k=0; k<=N; ++k) { l(offs+k) = -OSQP_INFTY; u(offs+k) =  P.delta_max; }
+    offs += (N+1);
+
+    // identity rows for variable bounds (lb <= z <= ub)
     l.tail(NZ) = lb;
     u.tail(NZ) = ub;
 
@@ -221,7 +279,6 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     solver.settings()->setAbsoluteTolerance(1e-4);
     solver.settings()->setRelativeTolerance(1e-4);
 
-    // Older OsqpEigen APIs: these return void
     solver.data()->setNumberOfVariables(NZ);
     solver.data()->setNumberOfConstraints(m);
     solver.data()->setHessianMatrix(H);
@@ -230,19 +287,21 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     solver.data()->setLowerBound(l);
     solver.data()->setUpperBound(u);
 
-    if (!solver.initSolver()) {
-        return {};
-    }
+    if (!solver.initSolver()) return {};
 
     auto status = solver.solveProblem();
-    if (status != OsqpEigen::ErrorExitFlag::NoError) {
-        return {};
-    }
+    if (status != OsqpEigen::ErrorExitFlag::NoError) return {};
 
-    VectorXd z = solver.getSolution();
-    MPCControl out{};
-    out.a      = z(idx_u(0,0));
-    out.ddelta = z(idx_u(0,1));
-    out.ok     = true;
-    return out;
+        Eigen::VectorXd z = solver.getSolution();
+        double sum_sigma_ey = 0.0, sum_sigma_delta = 0.0;
+        for (int k=0; k<=P.N; ++k) {
+            sum_sigma_ey    += z[idx_sig_ey(k)];
+            sum_sigma_delta += z[idx_sig_delta(k)];
+        }
+        MPCControl out{};
+        out.a      = z(idx_u(0,0));
+        out.ddelta = z(idx_u(0,1));
+        out.ok     = true;
+        return out;
+    }
 }

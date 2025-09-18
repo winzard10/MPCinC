@@ -5,22 +5,31 @@
 #include <cstddef>
 
 struct MPCParams {
-    int    N = 20;        // horizon steps
-    double dt = 0.1;      // [s]
-    double L  = 2.7;      // wheelbase [m]
+    int    N   = 20;
+    double dt  = 0.1;
+    double L   = 2.7;
 
-    // Weights
-    double wy = 8.0, wpsi = 4.0, wv = 0.5;             // state tracking
-    double wa = 0.2, wdd = 1.0;                        // input effort: a, ddelta
-    double wda = 0.1, wddd = 0.5;                      // input slew (Δu)
-    double wyf = 20.0, wpsif = 10.0;                   // terminal
+    // weights
+    double wy    = 4.0;
+    double wpsi  = 3.0;
+    double wv    = 1.0;
+    double wa    = 0.1;
+    double wdd   = 0.05;
+    double wda   = 0.0;   // slew a
+    double wddd  = 0.0;   // slew ddelta
+    double wyf   = 8.0;
+    double wpsif = 6.0;
 
-    // Limits
-    double a_min = -6.0, a_max = 2.5;                  // [m/s^2]
-    double ddelta_max = 0.7;                           // [rad/s]
-    double delta_max  = 0.5;                           // [rad]
-    double v_min = 0.0, v_max = 40.0;                  // [m/s]
-    double ey_max = 1.2;                               // soft lane bound (unused in hard form below)
+    // bounds
+    double a_min = -3.0, a_max = 3.0;
+    double ddelta_max = 0.5;        // rad/s
+    double v_min = 0.0,  v_max = 40.0;
+    double delta_max = 0.4;         // rad
+
+    // NEW: soft-constraint params
+    double ey_max = 1.5;            // lateral band (m)
+    double w_sigma_ey = 1e4;        // heavy penalty on ey slack
+    double w_sigma_delta = 1e4;     // heavy penalty on delta slack
 };
 
 struct PreviewPoint {
