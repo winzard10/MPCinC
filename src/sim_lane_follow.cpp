@@ -57,16 +57,56 @@ static State step_vehicle(const State& s, const Control& u, const VehicleParams&
     return n;
 }
 
+static CenterlineMap::LaneRef parse_lane(const std::string& s) {
+    std::string t = s;
+    std::transform(t.begin(), t.end(), t.begin(), ::tolower);
+    if (t == "right") return CenterlineMap::LaneRef::Right;
+    if (t == "left")  return CenterlineMap::LaneRef::Left;
+    return CenterlineMap::LaneRef::Center;
+}
+
+static double smoothstep01(double u) {
+    // 3u^2 - 2u^3, clamped to [0,1]
+    if (u <= 0.0) return 0.0;
+    if (u >= 1.0) return 1.0;
+    return u*u*(3.0 - 2.0*u);
+}
+
+// sample y of a lane at s
+static double lane_y_at(const CenterlineMap& map, double s, CenterlineMap::LaneRef which) {
+    if (which == CenterlineMap::LaneRef::Right) return map.right_lane_at(s).y;
+    if (which == CenterlineMap::LaneRef::Left)  return map.left_lane_at(s).y;
+    return map.center_at(s).y;
+}
+
+
 int main(int argc, char** argv)
 {
-    // ----- Load map -----
-    fs::path csv_path = (argc > 1) ? fs::path(argv[1]) : fs::path("data/lane_centerlines.csv");
+    // ---- CLI options ----
+    CenterlineMap::LaneRef lane_from = CenterlineMap::LaneRef::Right;
+    CenterlineMap::LaneRef lane_to   = CenterlineMap::LaneRef::Right;
+    double t_change = 1e18;   // default: no lane change
+    double T_change = 3.0;
+    std::string map_file = "data/lane_centerlines.csv";
+
+    for (int i=1; i<argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--lane-from" && i+1<argc)      lane_from = parse_lane(argv[++i]);
+        else if (a == "--lane-to" && i+1<argc)   lane_to   = parse_lane(argv[++i]);
+        else if (a == "--t-change" && i+1<argc)  t_change  = std::stod(argv[++i]);
+        else if (a == "--T-change" && i+1<argc)  T_change  = std::stod(argv[++i]);
+        else if (a == "--map" && i+1<argc)       map_file  = argv[++i];
+    }
+
+    // ---- Load map (declare 'map' before using it) ----
     CenterlineMap map;
-    if (!map.load_csv(csv_path.string())) {
-        std::cerr << "Failed to load centerlines: " << csv_path << "\n";
+    if (!map.load_csv(map_file)) {
+        std::cerr << "Failed to load centerlines: " << map_file << "\n";
         return 1;
     }
-    std::cout << "Loaded map: " << csv_path << "  (s ∈ [" << map.s_min() << ", " << map.s_max() << "])\n";
+    std::cout << "Loaded map: " << map_file
+            << "  (s ∈ [" << map.s_min() << ", " << map.s_max() << "])\n";
+
 
     VehicleParams vp; Limits lim;
     State st;
@@ -79,8 +119,7 @@ int main(int argc, char** argv)
 
     std::ofstream log("sim_log.csv");
     log << std::fixed << std::setprecision(6);
-    log << "t,s,x,y,psi,v,delta,a_cmd,ddelta_cmd,ey,epsi,dv,"
-           "v_ref,x_ref,y_ref,psi_ref\n";
+    log << "t,s,x,y,psi,v,delta,a_cmd,ddelta_cmd,ey,epsi,dv,v_ref,x_ref,y_ref,psi_ref,alpha\n";
 
     const double T = 60.0;
     const int    N = static_cast<int>(T / vp.dt);
@@ -92,26 +131,44 @@ int main(int argc, char** argv)
     for (int k = 0; k <= N; ++k) {
         double t = k * vp.dt;
 
-        // --- Frenet projection onto RIGHT lane ---
-        auto proj = map.project(st.x, st.y, CenterlineMap::LaneRef::Right);
-        auto cref = map.center_at(proj.s_proj);  // tangent & v_ref
+        // --- Project to centerline first to get s, tangent, psi_ref ---
+        auto projC = map.project(st.x, st.y);  // centerline projection (no lane arg)
+        auto cref  = map.center_at(projC.s_proj);
 
-        // Errors for logging (and for building MPC state)
-        double ey   = proj.ey;
-        double epsi = st.psi - proj.psi_ref;  // actual - reference (wrap is optional for small errors)
+        // Smooth blend factor alpha(t) for the lane change
+        double alpha = smoothstep01( (t - t_change) / T_change );
+
+        // Blend y reference between lanes at the same s
+        double y_from = lane_y_at(map, projC.s_proj, lane_from);
+        double y_to   = lane_y_at(map, projC.s_proj, lane_to);
+        double y_ref  = (1.0 - alpha) * y_from + alpha * y_to;
+
+        // We keep x_ref on centerline projection for numerical stability
+        double x_ref  = projC.x_ref;
+        double psi_ref = cref.psi;
+
+        // Signed lateral error to blended ref using centerline normal
+        double nx = -std::sin(psi_ref);
+        double ny =  std::cos(psi_ref);
+        double ey  = (st.x - x_ref) * nx + (st.y - y_ref) * ny;
+
+        // Heading error relative to road tangent
+        double epsi = st.psi - psi_ref;
         while (epsi >  M_PI) epsi -= 2*M_PI;
         while (epsi <= -M_PI) epsi += 2*M_PI;
-        double dv   = st.v - cref.v_ref;
+
+        // Speed error for logging
+        double dv = st.v - cref.v_ref;
 
         // ---- Build MPC preview (kappa, v_ref) along horizon ----
         MPCRef pref;
         pref.hp.resize(mpcp.N);
-        double s = proj.s_proj;
+        double s_h = projC.s_proj;
         for (int i = 0; i < mpcp.N; ++i) {
-            // simple forward preview using current speed; you can use cref.v_ref if you prefer
-            s = std::min(s + std::max(1e-3, st.v) * mpcp.dt, map.s_max());
-            auto c = map.center_at(s);
-            pref.hp[i] = { c.kappa, c.v_ref };
+            s_h = std::min(s_h + std::max(1e-3, st.v) * mpcp.dt, map.s_max());
+            auto c = map.center_at(s_h);
+            pref.hp[i].kappa = c.kappa;
+            pref.hp[i].v_ref = c.v_ref;
         }
 
         // ---- Current state in Frenet error coordinates ----
@@ -124,11 +181,12 @@ int main(int argc, char** argv)
         if (!u_mpc.ok) { u_mpc.a = 0.0; u_mpc.ddelta = 0.0; }
 
         // ---- Log (use s_proj so the CSV s column is the along-path coordinate)
-        log << t << "," << proj.s_proj << "," << st.x << "," << st.y << ","
+        log << t << "," << projC.s_proj << "," << st.x << "," << st.y << ","
             << st.psi << "," << st.v << "," << st.delta << ","
             << u_mpc.a << "," << u_mpc.ddelta << ","
             << ey << "," << epsi << "," << dv << ","
-            << cref.v_ref << "," << proj.x_ref << "," << proj.y_ref << "," << proj.psi_ref << "\n";
+            << cref.v_ref << "," << x_ref << "," << y_ref << "," << psi_ref << ","
+            << alpha << "\n";   // NEW
 
         // ---- Advance vehicle dynamics (step_vehicle expects Control)
         Control u_cmd;
@@ -137,7 +195,7 @@ int main(int argc, char** argv)
         st = step_vehicle(st, u_cmd, vp, lim);
 
         // optional: stop at end of map
-        if (proj.s_proj > map.s_max() - 1.0) break;
+        if (projC.s_proj > map.s_max() - 1.0) break;
 
     }
     log.close();
