@@ -33,7 +33,6 @@ void LTV_MPC::buildLinearization(const MPCRef& ref) {
     }
     for (int k=0; k<P.N; ++k) nom_.u[k].setZero();
 }
-
 MPCControl LTV_MPC::solve(const MPCState& x0, const MPCRef& ref){
     buildLinearization(ref);
     return solveQP(x0, ref);
@@ -98,6 +97,24 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
 
     SparseMatrix<double> H(NZ, NZ);
     H.setFromTriplets(Ht.begin(), Ht.end());
+
+    // Per-step hard bounds for ey_k derived from existing half-spaces a*ey >= b
+
+    int K_obs = obs_ ? std::min<int>(N, obs_->obs.size()) : 0;
+
+    std::vector<double> ey_upper(N+1, +OSQP_INFTY);
+    std::vector<double> ey_lower(N+1, -OSQP_INFTY);
+
+    for (int k = 0; k < K_obs; ++k) {                // NOTE: k < K_obs (NOT <= N)
+        for (const auto& ineq : obs_->obs[k]) {
+            if (ineq.a > 0.0) ey_lower[k] = std::max(ey_lower[k],  ineq.b/ineq.a);
+            else if (ineq.a < 0.0) ey_upper[k] = std::min(ey_upper[k], ineq.b/ineq.a);
+        }
+        ey_upper[k] = std::min(ey_upper[k],  P.ey_max);
+        ey_lower[k] = std::max(ey_lower[k], -P.ey_max);
+    }
+
+
 
     // ---------- Dynamics equalities: Aeq z = beq ----------
     const int meq = N*nx + nx; // N transitions + init
@@ -210,9 +227,9 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     const int m_soft_delta = 2*(N+1);
 
     int m_obs = 0;
-    if (obs_) {
-    for (int k = 0; k < P.N; ++k)
-        m_obs += static_cast<int>(obs_->obs[k].size());
+    for (int k = 0; k < K_obs; ++k) {
+        if (ey_upper[k] < +OSQP_INFTY) ++m_obs;  // ey_k <= U
+        if (ey_lower[k] > -OSQP_INFTY) ++m_obs;  // ey_k >= L
     }
     const int m = meq + m_obs + m_soft_ey + m_soft_delta + NZ;
 
@@ -229,17 +246,23 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
 
     
     // ---- obstacle half-spaces (one row per ineq): -a*ey_k - sigma_ey_k <= -b
-    int row = meq;  // start right after equalities
-    if (obs_) {
-        for (int k = 0; k < P.N; ++k) {
-            for (const auto& ineq : obs_->obs[k]) {
-            // columns: ey(k) is idx_x(k,0); sigma_ey(k) is idx_sig_ey(k)
-            At.emplace_back(row, idx_x(k,0),    -ineq.a);
-            At.emplace_back(row, idx_sig_ey(k), -1.0);
+    int row = meq;
+
+    // ey_k <= U_k
+    for (int k = 0; k < K_obs; ++k) {
+        if (ey_upper[k] < +OSQP_INFTY) {
+            At.emplace_back(row, idx_x(k,0), +1.0);
             ++row;
-            }
         }
     }
+    // ey_k >= L_k  (encode as -ey_k <= -L_k)
+    for (int k = 0; k < K_obs; ++k) {
+        if (ey_lower[k] > -OSQP_INFTY) {
+            At.emplace_back(row, idx_x(k,0), -1.0);
+            ++row;
+        }
+    }
+    
     // 2) soft inequalities for ey and delta
     /* row continues after obstacle rows */
 
@@ -284,15 +307,11 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     
     // obstacle rows: lower = -inf, upper = -b
     int offs = meq;
-    if (obs_) {
-    for (int k = 0; k < P.N; ++k) {
-        for (const auto& ineq : obs_->obs[k]) {
-        l(offs) = -OSQP_INFTY;
-        u(offs) = -ineq.b;
-        ++offs;
-        }
-        }
+    for (int k = 0; k < K_obs; ++k) {
+        if (ey_upper[k] < +OSQP_INFTY) { l(offs) = -OSQP_INFTY; u(offs) =  ey_upper[k]; ++offs; }
+        if (ey_lower[k] > -OSQP_INFTY) { l(offs) = -OSQP_INFTY; u(offs) = -ey_lower[k]; ++offs; }
     }
+
     // soft ey rows (upper = ey_max, lower = -inf)
     // continue offsets after obstacle rows
     for (int k=0; k<=N; ++k) { l(offs+k) = -OSQP_INFTY; u(offs+k) =  P.ey_max; }
@@ -330,16 +349,22 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     auto status = solver.solveProblem();
     if (status != OsqpEigen::ErrorExitFlag::NoError) return {};
 
-        Eigen::VectorXd z = solver.getSolution();
-        double sum_sigma_ey = 0.0, sum_sigma_delta = 0.0;
-        for (int k=0; k<=P.N; ++k) {
-            sum_sigma_ey    += z[idx_sig_ey(k)];
-            sum_sigma_delta += z[idx_sig_delta(k)];
-        }
-        MPCControl out{};
-        out.a      = z(idx_u(0,0));
-        out.ddelta = z(idx_u(0,1));
-        out.ok     = true;
-        return out;
+    Eigen::VectorXd z = solver.getSolution();
+    double sum_sigma_ey = 0.0, sum_sigma_delta = 0.0;
+    for (int k=0; k<=P.N; ++k) {
+        sum_sigma_ey    += z[idx_sig_ey(k)];
+        sum_sigma_delta += z[idx_sig_delta(k)];
+    }
+
+    const double ey0 = z(idx_x(0,0));
+    if (ey_upper[0] < +OSQP_INFTY) std::printf("[MPC] ey0<=%.3f, gap=%.3f\n", ey_upper[0], ey_upper[0]-ey0);
+    if (ey_lower[0] > -OSQP_INFTY) std::printf("[MPC] ey0>=%.3f, gap=%.3f\n", ey_lower[0], ey0-ey_lower[0]);
+
+
+    MPCControl out{};
+    out.a      = z(idx_u(0,0));
+    out.ddelta = z(idx_u(0,1));
+    out.ok     = true;
+    return out;
     }
 }

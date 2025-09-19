@@ -12,7 +12,6 @@ if Path("data/lane_centerlines_enhanced.csv").exists():
     map_path = "data/lane_centerlines_enhanced.csv"
 
 # ---------- load sim log ----------
-# ---------- load sim log ----------
 import pandas as _pd
 
 def _load_sim_csv(path):

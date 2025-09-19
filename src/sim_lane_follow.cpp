@@ -187,7 +187,6 @@ int main(int argc, char** argv)
             auto c = map.center_at(s_h);
             pref.hp[i].kappa = c.kappa;
             pref.hp[i].v_ref = c.v_ref;
-            std::cout << c.v_ref <<std::endl;
         }
 
         // ---- Current state in Frenet error coordinates ----

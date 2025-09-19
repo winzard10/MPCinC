@@ -1,4 +1,3 @@
-
 #include "obstacles.hpp"
 #include <fstream>
 #include <sstream>

@@ -11,11 +11,11 @@ struct MPCParams {
     double L   = 2.7;
 
     // weights
-    double wy    = 0.6;
-    double wpsi  = 2.0;
-    double wv    = 1.0;
-    double wa    = 0.1;
-    double wdd   = 0.4;
+    double wy    = 0.05;
+    double wpsi  = 0.1;
+    double wv    = 0.1;
+    double wa    = 0.05;
+    double wdd   = 0.1;
     double wda   = 0.0;   // slew a
     double wddd  = 0.0;   // slew ddelta
     double wyf   = 8.0;
@@ -29,8 +29,8 @@ struct MPCParams {
 
     // NEW: soft-constraint params
     double ey_max = 1.5;            // lateral band (m)
-    double w_sigma_ey = 2e5;        // heavy penalty on ey slack
-    double w_sigma_delta = 1e4;     // heavy penalty on delta slack
+    double w_sigma_ey = 1e4;        // heavy penalty on ey slack
+    double w_sigma_delta = 1e2;     // heavy penalty on delta slack
 };
 
 struct PreviewPoint {
