@@ -64,6 +64,17 @@ target_link_libraries(mpc PUBLIC Eigen3::Eigen OsqpEigen::OsqpEigen)
 # Attach MPC to simulator
 target_link_libraries(sim_lane_follow PRIVATE mpc)
 
+# ===== Library: obstacles =====
+add_library(obstacles STATIC
+  src/obstacles.cpp
+)
+target_include_directories(obstacles PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Link it into the sim
+target_link_libraries(sim_lane_follow PRIVATE obstacles)
+
 # ===== Data handling =====
 set(HWY_MPC_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 

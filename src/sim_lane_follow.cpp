@@ -4,7 +4,9 @@
 #include <iomanip>
 #include <cmath>
 #include <filesystem>
+#include <Eigen/Dense>
 #include "mpc_ltv.hpp"
+#include "obstacles.hpp"
 
 
 namespace fs = std::filesystem;
@@ -119,7 +121,23 @@ int main(int argc, char** argv)
 
     std::ofstream log("sim_log.csv");
     log << std::fixed << std::setprecision(6);
-    log << "t,s,x,y,psi,v,delta,a_cmd,ddelta_cmd,ey,epsi,dv,v_ref,x_ref,y_ref,psi_ref,alpha\n";
+    log << "t,s,x,y,psi,v,delta,a_cmd,ddelta_cmd,ey,epsi,dv,v_ref,x_ref,y_ref,psi_ref,alpha,dmin\n";
+
+    // ---- Load obstacles (optional) ----
+    Obstacles obstacles;
+    std::string obs_file = "data/obstacles.csv";
+    if (!std::filesystem::exists(obs_file))
+        obs_file = "data/obstacles_example.csv";
+    if (std::filesystem::exists(obs_file)) {
+        if (obstacles.load_csv(obs_file)) {
+            std::cout << "Loaded obstacles: " << obs_file
+                    << " (" << obstacles.items.size() << " items)\n";
+        } else {
+            std::cout << "Failed to parse obstacles file: " << obs_file << "\n";
+        }
+    } else {
+        std::cout << "No obstacles file found; running without obstacles.\n";
+    }
 
     const double T = 60.0;
     const int    N = static_cast<int>(T / vp.dt);
@@ -169,10 +187,92 @@ int main(int argc, char** argv)
             auto c = map.center_at(s_h);
             pref.hp[i].kappa = c.kappa;
             pref.hp[i].v_ref = c.v_ref;
+            std::cout << c.v_ref <<std::endl;
         }
 
         // ---- Current state in Frenet error coordinates ----
         MPCState xk{ ey, epsi, st.v, st.delta };
+
+        // === BEGIN: obstacle corridor constraints (stable) ===
+        MPCObsSet oc;
+        oc.obs.resize(mpcp.N);
+
+        const double t0     = t;        // current sim time
+        const double margin = 0.6;      // clearance added to obstacle radius [m]
+        const double L_look = 45.0;     // only obstacles 0..L_look m ahead
+        const double slope  = 0.30;     // max corridor change per step [m/step]
+
+        // Precompute ref position and lane frames along the horizon
+        std::vector<Eigen::Vector2d> p_ref_h(mpcp.N);
+        std::vector<double>          psi_ref_h(mpcp.N);
+        std::vector<Eigen::Vector2d> n_lane_h(mpcp.N);
+        std::vector<Eigen::Vector2d> t_hat_h(mpcp.N);
+
+        double s_for_h = projC.s_proj;
+        for (int k = 0; k < mpcp.N; ++k) {
+            s_for_h = std::min(s_for_h + std::max(0.1, st.v) * mpcp.dt, map.s_max());
+            const auto c = map.center_at(s_for_h);            // needs {x,y,psi}
+            p_ref_h[k]   = Eigen::Vector2d(c.x, c.y);
+            psi_ref_h[k] = c.psi;
+            n_lane_h[k]  = Eigen::Vector2d(-std::sin(psi_ref_h[k]),  std::cos(psi_ref_h[k]));
+            t_hat_h[k]   = Eigen::Vector2d( std::cos(psi_ref_h[k]),  std::sin(psi_ref_h[k]));
+        }
+
+        // Start with a wide default corridor (your nominal ey bounds)
+        std::vector<double> ey_min(mpcp.N, -mpcp.ey_max);
+        std::vector<double> ey_max(mpcp.N,  +mpcp.ey_max);
+
+        // Tighten the corridor with obstacles
+        for (int k = 0; k < mpcp.N; ++k) {
+            const double tk = t0 + (k + 1) * mpcp.dt;
+            auto act = obstacles.active_at(tk);
+            for (const auto& a : act) {
+                const Eigen::Vector2d p_ob(a.x, a.y);
+                const Eigen::Vector2d d = p_ob - p_ref_h[k];
+                const double x_lon = t_hat_h[k].dot(d);  // along-lane distance
+                if (x_lon < 0.0 || x_lon > L_look) continue;  // ignore behind/too far
+
+                const double y_lat = n_lane_h[k].dot(d); // +left / -right
+                const double Rplus = a.radius + margin;
+
+                if (y_lat >= 0.0) {
+                    // obstacle on LEFT → upper bound
+                    ey_max[k] = std::min(ey_max[k], y_lat - Rplus);
+                } else {
+                    // obstacle on RIGHT → lower bound
+                    ey_min[k] = std::max(ey_min[k], y_lat + Rplus);
+                }
+            }
+        }
+
+        // Smooth the corridor to prevent step-to-step flipping (forward + backward pass)
+        for (int k = 1; k < mpcp.N; ++k) {
+            ey_max[k] = std::min(ey_max[k], ey_max[k-1] + slope);
+            ey_min[k] = std::max(ey_min[k], ey_min[k-1] - slope);
+        }
+        for (int k = mpcp.N - 2; k >= 0; --k) {
+            ey_max[k] = std::min(ey_max[k], ey_max[k+1] + slope);
+            ey_min[k] = std::max(ey_min[k], ey_min[k+1] - slope);
+        }
+
+        // Ensure corridor never inverts; if too tight, open a tiny gap (epsilon)
+        const double eps = 0.05;
+        for (int k = 0; k < mpcp.N; ++k) {
+            if (ey_min[k] > ey_max[k] - eps) {
+                const double mid = 0.5*(ey_min[k] + ey_max[k]);
+                ey_min[k] = mid - 0.5*eps;
+                ey_max[k] = mid + 0.5*eps;
+            }
+            // Convert corridor to inequalities using existing sigma_ey(k):
+            // ey >= ey_min  →  (+1)*ey + σ >=  ey_min
+            // ey ≤ ey_max   →  (-1)*ey + σ ≥ -ey_max
+            oc.obs[k].push_back(ObsIneq{ +1.0,  ey_min[k]  });
+            oc.obs[k].push_back(ObsIneq{ -1.0, -ey_max[k]  });
+        }
+
+        // Install constraints for this solve
+        mpc.setObstacleConstraints(std::move(oc));
+        // === END: obstacle corridor constraints ===
 
         // ---- Solve MPC ----
         MPCControl u_mpc = mpc.solve(xk, pref);
@@ -180,13 +280,26 @@ int main(int argc, char** argv)
         // Fallback if solver failed
         if (!u_mpc.ok) { u_mpc.a = 0.0; u_mpc.ddelta = 0.0; }
 
-        // ---- Log (use s_proj so the CSV s column is the along-path coordinate)
+        // ---- Minimum distance to obstacles (at current sim time t) ----
+        double dmin = std::numeric_limits<double>::infinity();
+        {
+            auto active = obstacles.active_at(t);  // use 't' (your current sim time)
+            for (const auto& a : active) {
+                double dx = st.x - a.x;            // use st.x / st.y (state), not x/y
+                double dy = st.y - a.y;
+                double d  = std::sqrt(dx*dx + dy*dy) - a.radius;
+                if (d < dmin) dmin = d;
+            }
+            if (!std::isfinite(dmin)) dmin = std::numeric_limits<double>::quiet_NaN();
+        }
+
+        // ---- Log (use s_proj so the CSV 's' is the along-path coordinate)
         log << t << "," << projC.s_proj << "," << st.x << "," << st.y << ","
             << st.psi << "," << st.v << "," << st.delta << ","
             << u_mpc.a << "," << u_mpc.ddelta << ","
             << ey << "," << epsi << "," << dv << ","
             << cref.v_ref << "," << x_ref << "," << y_ref << "," << psi_ref << ","
-            << alpha << "\n";   // NEW
+            << alpha << "," << dmin << "\n";
 
         // ---- Advance vehicle dynamics (step_vehicle expects Control)
         Control u_cmd;

@@ -213,6 +213,19 @@ mpc/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/mpc.dir/build.make CMakeFiles/mpc.dir/build
 .PHONY : mpc/fast
 
+#=============================================================================
+# Target rules for targets named obstacles
+
+# Build rule for target.
+obstacles: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 obstacles
+.PHONY : obstacles
+
+# fast build rule for target.
+obstacles/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/obstacles.dir/build.make CMakeFiles/obstacles.dir/build
+.PHONY : obstacles/fast
+
 src/centerline_map.o: src/centerline_map.cpp.o
 .PHONY : src/centerline_map.o
 
@@ -285,6 +298,30 @@ src/mpc_ltv.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/mpc.dir/build.make CMakeFiles/mpc.dir/src/mpc_ltv.cpp.s
 .PHONY : src/mpc_ltv.cpp.s
 
+src/obstacles.o: src/obstacles.cpp.o
+.PHONY : src/obstacles.o
+
+# target to build an object file
+src/obstacles.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/obstacles.dir/build.make CMakeFiles/obstacles.dir/src/obstacles.cpp.o
+.PHONY : src/obstacles.cpp.o
+
+src/obstacles.i: src/obstacles.cpp.i
+.PHONY : src/obstacles.i
+
+# target to preprocess a source file
+src/obstacles.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/obstacles.dir/build.make CMakeFiles/obstacles.dir/src/obstacles.cpp.i
+.PHONY : src/obstacles.cpp.i
+
+src/obstacles.s: src/obstacles.cpp.s
+.PHONY : src/obstacles.s
+
+# target to generate assembly for a file
+src/obstacles.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/obstacles.dir/build.make CMakeFiles/obstacles.dir/src/obstacles.cpp.s
+.PHONY : src/obstacles.cpp.s
+
 src/sim_lane_follow.o: src/sim_lane_follow.cpp.o
 .PHONY : src/sim_lane_follow.o
 
@@ -324,6 +361,7 @@ help:
 	@echo "... centerline"
 	@echo "... centerline_demo"
 	@echo "... mpc"
+	@echo "... obstacles"
 	@echo "... sim_lane_follow"
 	@echo "... src/centerline_map.o"
 	@echo "... src/centerline_map.i"
@@ -334,6 +372,9 @@ help:
 	@echo "... src/mpc_ltv.o"
 	@echo "... src/mpc_ltv.i"
 	@echo "... src/mpc_ltv.s"
+	@echo "... src/obstacles.o"
+	@echo "... src/obstacles.i"
+	@echo "... src/obstacles.s"
 	@echo "... src/sim_lane_follow.o"
 	@echo "... src/sim_lane_follow.i"
 	@echo "... src/sim_lane_follow.s"

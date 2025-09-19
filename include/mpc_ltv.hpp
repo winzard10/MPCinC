@@ -3,6 +3,7 @@
 #include <Eigen/Sparse>
 #include <vector>
 #include <cstddef>
+#include <optional> 
 
 struct MPCParams {
     int    N   = 20;
@@ -10,11 +11,11 @@ struct MPCParams {
     double L   = 2.7;
 
     // weights
-    double wy    = 4.0;
-    double wpsi  = 3.0;
+    double wy    = 0.6;
+    double wpsi  = 2.0;
     double wv    = 1.0;
     double wa    = 0.1;
-    double wdd   = 0.05;
+    double wdd   = 0.4;
     double wda   = 0.0;   // slew a
     double wddd  = 0.0;   // slew ddelta
     double wyf   = 8.0;
@@ -28,7 +29,7 @@ struct MPCParams {
 
     // NEW: soft-constraint params
     double ey_max = 1.5;            // lateral band (m)
-    double w_sigma_ey = 1e4;        // heavy penalty on ey slack
+    double w_sigma_ey = 2e5;        // heavy penalty on ey slack
     double w_sigma_delta = 1e4;     // heavy penalty on delta slack
 };
 
@@ -55,8 +56,13 @@ struct MPCControl {
     bool   ok = false;
 };
 
+
+// --- Obstacle linear half-spaces in ey ---
+struct ObsIneq { double a; double b; }; // a*ey >= b
+struct MPCObsSet { std::vector<std::vector<ObsIneq>> obs; };
 class LTV_MPC {
 public:
+    void setObstacleConstraints(MPCObsSet s) { obs_ = std::move(s); }
     explicit LTV_MPC(const MPCParams& p);
 
     // Solve one step given current state x0 and horizon preview (kappa, v_ref)
@@ -66,6 +72,7 @@ public:
     void resetWarmStart();
 
 private:
+    std::optional<MPCObsSet> obs_;
     MPCParams P;
 
     // Nominal rollout for linearization (kept shallow for simplicity)

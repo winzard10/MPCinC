@@ -61,34 +61,40 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     auto idx_sig_delta = [&](int k){ return NX + NU + (2*k + 1); };
 
     for (int k=0;k<N;++k){
-        // state tracking
-        Ht.emplace_back(idx_x(k,0), idx_x(k,0), P.wy);
-        Ht.emplace_back(idx_x(k,1), idx_x(k,1), P.wpsi);
-        Ht.emplace_back(idx_x(k,2), idx_x(k,2), P.wv);
-        Ht.emplace_back(idx_sig_ey(k),    idx_sig_ey(k),    P.w_sigma_ey);
-        Ht.emplace_back(idx_sig_delta(k), idx_sig_delta(k), P.w_sigma_delta);
-        g(idx_x(k,2)) += -2.0 * P.wv * ref.hp[k].v_ref; // linear term for v_ref
-
-        // input effort
-        Ht.emplace_back(idx_u(k,0), idx_u(k,0), P.wa);
-        Ht.emplace_back(idx_u(k,1), idx_u(k,1), P.wdd);
-
-        // input slew
+        // state tracking (ey, epsi, v) — squared penalties
+        Ht.emplace_back(idx_x(k,0), idx_x(k,0), 2.0 * P.wy);
+        Ht.emplace_back(idx_x(k,1), idx_x(k,1), 2.0 * P.wpsi);
+        Ht.emplace_back(idx_x(k,2), idx_x(k,2), 2.0 * P.wv);
+    
+        // slacks (squared)
+        Ht.emplace_back(idx_sig_ey(k),    idx_sig_ey(k),    2.0 * P.w_sigma_ey);
+        Ht.emplace_back(idx_sig_delta(k), idx_sig_delta(k), 2.0 * P.w_sigma_delta);
+    
+        // linear term for v_ref stays with -2*w*v_ref
+        g(idx_x(k,2)) += -2.0 * P.wv * ref.hp[k].v_ref;
+    
+        // input effort (squared)
+        Ht.emplace_back(idx_u(k,0), idx_u(k,0), 2.0 * P.wa);
+        Ht.emplace_back(idx_u(k,1), idx_u(k,1), 2.0 * P.wdd);
+    
+        // input slew penalty ( (u_k - u_{k-1})^2 * w )
         if (k>0){
             for (int j=0;j<nu;++j){
                 const int uk   = idx_u(k,j);
                 const int ukm1 = idx_u(k-1,j);
                 const double w = (j==0? P.wda : P.wddd);
-                Ht.emplace_back(uk,    uk,    w);
-                Ht.emplace_back(ukm1,  ukm1,  w);
-                Ht.emplace_back(uk,    ukm1, -w);
-                Ht.emplace_back(ukm1,  uk,   -w);
+                // put 2*w on the diagonal terms so (1/2)Hzz gives w*(... )^2
+                Ht.emplace_back(uk,    uk,    2.0*w);
+                Ht.emplace_back(ukm1,  ukm1,  2.0*w);
+                Ht.emplace_back(uk,    ukm1, -2.0*w);
+                Ht.emplace_back(ukm1,  uk,   -2.0*w);
             }
         }
     }
-    // terminal weights
-    Ht.emplace_back(idx_x(N,0), idx_x(N,0), P.wyf);
-    Ht.emplace_back(idx_x(N,1), idx_x(N,1), P.wpsif);
+    // terminal weights (squared)
+    Ht.emplace_back(idx_x(N,0), idx_x(N,0), 2.0 * P.wyf);
+    Ht.emplace_back(idx_x(N,1), idx_x(N,1), 2.0 * P.wpsif);
+    
 
     SparseMatrix<double> H(NZ, NZ);
     H.setFromTriplets(Ht.begin(), Ht.end());
@@ -202,7 +208,14 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     // Rows = equalities (meq) + soft ey (2*(N+1)) + soft delta (2*(N+1)) + identity for variable bounds (NZ)
     const int m_soft_ey    = 2*(N+1);
     const int m_soft_delta = 2*(N+1);
-    const int m = meq + m_soft_ey + m_soft_delta + NZ;
+
+    int m_obs = 0;
+    if (obs_) {
+    for (int k = 0; k < P.N; ++k)
+        m_obs += static_cast<int>(obs_->obs[k].size());
+    }
+    const int m = meq + m_obs + m_soft_ey + m_soft_delta + NZ;
+
 
     std::vector<Triplet<double>> At;
     At.reserve(Aeq.nonZeros() + m_soft_ey*3 + m_soft_delta*3 + NZ);
@@ -214,8 +227,21 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
         }
     }
 
+    
+    // ---- obstacle half-spaces (one row per ineq): -a*ey_k - sigma_ey_k <= -b
+    int row = meq;  // start right after equalities
+    if (obs_) {
+        for (int k = 0; k < P.N; ++k) {
+            for (const auto& ineq : obs_->obs[k]) {
+            // columns: ey(k) is idx_x(k,0); sigma_ey(k) is idx_sig_ey(k)
+            At.emplace_back(row, idx_x(k,0),    -ineq.a);
+            At.emplace_back(row, idx_sig_ey(k), -1.0);
+            ++row;
+            }
+        }
+    }
     // 2) soft inequalities for ey and delta
-    int row = meq;
+    /* row continues after obstacle rows */
 
     // ey_k - sigma_ey_k <= ey_max
     for (int k=0; k<=N; ++k, ++row){
@@ -255,8 +281,20 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref){
     l.head(meq) = beq;
     u.head(meq) = beq;
 
-    // soft ey rows (upper = ey_max, lower = -inf)
+    
+    // obstacle rows: lower = -inf, upper = -b
     int offs = meq;
+    if (obs_) {
+    for (int k = 0; k < P.N; ++k) {
+        for (const auto& ineq : obs_->obs[k]) {
+        l(offs) = -OSQP_INFTY;
+        u(offs) = -ineq.b;
+        ++offs;
+        }
+        }
+    }
+    // soft ey rows (upper = ey_max, lower = -inf)
+    // continue offsets after obstacle rows
     for (int k=0; k<=N; ++k) { l(offs+k) = -OSQP_INFTY; u(offs+k) =  P.ey_max; }
     offs += (N+1);
     for (int k=0; k<=N; ++k) { l(offs+k) = -OSQP_INFTY; u(offs+k) =  P.ey_max; }
