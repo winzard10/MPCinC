@@ -571,6 +571,7 @@ CMakeFiles/mpc.dir/src/mpc_ltv.cpp.o: ../src/mpc_ltv.cpp \
   /usr/include/c++/11/bits/allocated_ptr.h \
   /usr/include/c++/11/bits/list.tcc \
   /usr/include/c++/11/optional \
+  ../include/obstacles.hpp \
   /home/phurithat/.local/include/OsqpEigen/OsqpEigen.h \
   /home/phurithat/.local/include/OsqpEigen/Constants.hpp \
   /home/phurithat/.local/include/OsqpEigen/Compat.hpp \
@@ -648,6 +649,8 @@ CMakeFiles/mpc.dir/src/mpc_ltv.cpp.o: ../src/mpc_ltv.cpp \
 /home/phurithat/.local/include/osqp/osqp.h:
 
 /home/phurithat/.local/include/OsqpEigen/Compat.hpp:
+
+../include/obstacles.hpp:
 
 /usr/include/c++/11/optional:
 

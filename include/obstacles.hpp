@@ -3,6 +3,9 @@
 #include <string>
 #include <optional>
 
+// -----------------------------
+// Obstacle CSV model & queries
+// -----------------------------
 struct Obstacle {
     int    id = -1;
     enum class Kind { Static, Moving } kind = Kind::Static;
@@ -14,8 +17,7 @@ struct Obstacle {
 
 struct Obstacles {
     // Load from CSV with header:
-    // id,kind,x0,y0,vx,vy,radius,t_start,t_end
-    // kind in {"static","moving"} (case-insensitive)
+    // id,kind,x0,y0,vx,vy,radius,t_start,t_end   (kind ∈ {static,moving})
     bool load_csv(const std::string& path);
 
     // Position at time t (for moving obstacles).
@@ -23,10 +25,32 @@ struct Obstacles {
     std::optional<std::pair<double,double>> position_of(const Obstacle& ob, double t) const;
 
     // Get list of active obstacles at time t with their positions.
-    struct Active {
-        int id; double x; double y; double radius;
-    };
+    struct Active { int id; double x; double y; double radius; };
     std::vector<Active> active_at(double t) const;
 
     std::vector<Obstacle> items;
 };
+
+// ---------------------------------------------
+// MPC-facing half-spaces and ey bound utility
+// ---------------------------------------------
+// Each inequality encodes a half-space in lateral error: a * ey >= b.
+struct ObsIneq { double a; double b; };
+
+struct MPCObsSet {
+    // obs[k] = list of half-spaces to apply at step k (k = 0..N-1)
+    std::vector<std::vector<ObsIneq>> obs;
+};
+
+// Convert half-spaces for ey into per-step upper/lower bounds.
+//
+// Parameters:
+//  - set:    half-spaces a*ey >= b provided per step (k = 0..K-1)
+//  - N:      number of steps you will enforce (0..N-1)
+//  - ey_cap: clamp to ±ey_cap even if unconstrained
+//  - ey_upper/ey_lower: output resized to N; +inf / -inf when unconstrained
+void compute_lateral_bounds(const MPCObsSet& set,
+                            int N,
+                            double ey_cap,
+                            std::vector<double>& ey_upper,
+                            std::vector<double>& ey_lower);

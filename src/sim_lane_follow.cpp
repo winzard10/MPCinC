@@ -197,8 +197,8 @@ int main(int argc, char** argv)
         oc.obs.resize(mpcp.N);
 
         const double t0     = t;        // current sim time
-        const double margin = 0.6;      // clearance added to obstacle radius [m]
-        const double L_look = 45.0;     // only obstacles 0..L_look m ahead
+        const double margin = 0.8;      // clearance added to obstacle radius [m]
+        const double L_look = 200.0;     // only obstacles 0..L_look m ahead
         const double slope  = 0.30;     // max corridor change per step [m/step]
 
         // Precompute ref position and lane frames along the horizon
@@ -265,8 +265,8 @@ int main(int argc, char** argv)
             // Convert corridor to inequalities using existing sigma_ey(k):
             // ey >= ey_min  →  (+1)*ey + σ >=  ey_min
             // ey ≤ ey_max   →  (-1)*ey + σ ≥ -ey_max
-            oc.obs[k].push_back(ObsIneq{ +1.0,  ey_min[k]  });
-            oc.obs[k].push_back(ObsIneq{ -1.0, -ey_max[k]  });
+            oc.obs[k].push_back(ObsIneq{ +1.0,  ey_min[k]  + 1.2});
+            oc.obs[k].push_back(ObsIneq{ -1.0, -ey_max[k]  + 1.2});
         }
 
         // Install constraints for this solve

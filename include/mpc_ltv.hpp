@@ -3,8 +3,13 @@
 #include <Eigen/Sparse>
 #include <vector>
 #include <cstddef>
-#include <optional> 
+#include <optional>
 
+#include "obstacles.hpp"   // MPCObsSet + compute_lateral_bounds
+
+// ---------------------------------
+// MPC configuration (kept as-is)
+// ---------------------------------
 struct MPCParams {
     int    N   = 20;
     double dt  = 0.1;
@@ -12,82 +17,96 @@ struct MPCParams {
 
     // weights
     double wy    = 0.05;
-    double wpsi  = 0.1;
-    double wv    = 0.1;
+    double wpsi  = 0.10;
+    double wv    = 0.10;
     double wa    = 0.05;
-    double wdd   = 0.1;
-    double wda   = 0.0;   // slew a
-    double wddd  = 0.0;   // slew ddelta
-    double wyf   = 8.0;
-    double wpsif = 6.0;
+    double wdd   = 0.10;   // effort on ddelta
+    double wda   = 0.00;   // slew a     (u_k - u_{k-1})
+    double wddd  = 0.00;   // slew ddelta
+    double wyf   = 8.0;    // terminal ey
+    double wpsif = 6.0;    // terminal epsi
 
     // bounds
-    double a_min = -3.0, a_max = 3.0;
-    double ddelta_max = 0.5;        // rad/s
+    double a_min = -5.0, a_max = 3.0;
+    double ddelta_max = 0.25;     // |steer rate| [rad/s]
+    double delta_max  = 0.40;     // steering angle cap [rad]
     double v_min = 0.0,  v_max = 40.0;
-    double delta_max = 0.4;         // rad
 
-    // NEW: soft-constraint params
-    double ey_max = 1.5;            // lateral band (m)
-    double w_sigma_ey = 1e4;        // heavy penalty on ey slack
-    double w_sigma_delta = 1e2;     // heavy penalty on delta slack
+    // lateral hard band (also used when no obstacles)
+    double ey_max = 4.0;
 };
 
+// Preview point used by your sim
 struct PreviewPoint {
-    double kappa;     // road curvature at s_k
-    double v_ref;     // desired speed at s_k
+    double kappa = 0.0;   // road curvature at s_k
+    double v_ref = 0.0;   // desired speed at s_k
 };
 
+// Horizon preview (your sim fills ref.hp[i].{kappa,v_ref})
 struct MPCRef {
-    // length N sequences
-    std::vector<PreviewPoint> hp;
+    std::vector<PreviewPoint> hp;  // length N (or >= N)
 };
 
+// State / Input / Output
 struct MPCState {
-    double ey;      // lateral error [m]
-    double epsi;    // heading error [rad]
-    double v;       // speed [m/s]
-    double delta;   // steering angle [rad]
+    double ey    = 0.0;   // lateral error [m]
+    double epsi  = 0.0;   // heading error [rad]
+    double v     = 0.0;   // speed [m/s]
+    double delta = 0.0;   // steering angle [rad]
 };
 
 struct MPCControl {
-    double a;        // accel [m/s^2]
-    double ddelta;   // steering rate [rad/s]
-    bool   ok = false;
+    double a      = 0.0;  // accel [m/s^2]
+    double ddelta = 0.0;  // steering rate [rad/s]
+    bool   ok     = false;
 };
 
-
-// --- Obstacle linear half-spaces in ey ---
-struct ObsIneq { double a; double b; }; // a*ey >= b
-struct MPCObsSet { std::vector<std::vector<ObsIneq>> obs; };
+// ---------------------------------
+// LTV MPC Controller
+// ---------------------------------
 class LTV_MPC {
 public:
-    void setObstacleConstraints(MPCObsSet s) { obs_ = std::move(s); }
-    explicit LTV_MPC(const MPCParams& p);
+    explicit LTV_MPC(const MPCParams& p): P(p) {
+        nom_.x.resize(P.N + 1);
+        nom_.u.resize(P.N);
+    }
 
-    // Solve one step given current state x0 and horizon preview (kappa, v_ref)
-    MPCControl solve(const MPCState& x0, const MPCRef& ref);
+    void setObstacleConstraints(std::optional<MPCObsSet> s) { obs_ = std::move(s); }
 
-    // warm-start hooks (optional)
-    void resetWarmStart();
+    // Optional warm-start
+    void setNominal(const std::vector<MPCState>& x_nom,
+                    const std::vector<Eigen::Vector2d>& u_nom) {
+        nom_.x = x_nom; nom_.u = u_nom;
+    }
 
-private:
-    std::optional<MPCObsSet> obs_;
-    MPCParams P;
-
-    // Nominal rollout for linearization (kept shallow for simplicity)
-    struct Nominal {
-        std::vector<MPCState> x;   // size N+1
-        std::vector<Eigen::Vector2d> u; // [a, ddelta], size N
-    } nom_;
-
-    // Build linearized discrete model x_{k+1} = A x_k + B u_k + c
+    // Build linearized discrete model x_{k+1} = A_k x_k + B_k u_k + c_k
     void buildLinearization(const MPCRef& ref);
 
-    // Assemble QP matrices (H, g, Aeq, beq, Ain, lbA, ubA, lb, ub)
-    // and call OSQP; returns first control.
+    // Assemble and solve QP; returns first input to apply
     MPCControl solveQP(const MPCState& x0, const MPCRef& ref);
+
+    // Backward-compatible wrapper (your sim calls mpc.solve(...))
+    MPCControl solve(const MPCState& x0, const MPCRef& ref) {
+        buildLinearization(ref);
+        return solveQP(x0, ref);
+    }
 
     // helpers
     static void angleWrap(double& a);
+
+private:
+    MPCParams P;
+
+    struct LinModel {
+        std::vector<Eigen::Matrix<double,4,4>> A;  // ey, epsi, v, delta
+        std::vector<Eigen::Matrix<double,4,2>> B;  // a, ddelta
+        std::vector<Eigen::Matrix<double,4,1>> c;  // affine
+    } lm_;
+
+    struct Nominal {
+        std::vector<MPCState>        x;   // N+1
+        std::vector<Eigen::Vector2d> u;   // N
+    } nom_;
+
+    std::optional<MPCObsSet> obs_;        // per-step ey half-spaces
 };
