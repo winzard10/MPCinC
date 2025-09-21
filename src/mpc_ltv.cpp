@@ -111,7 +111,8 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref) {
     if (obs_) {
         std::vector<double> upN, loN;
         compute_lateral_bounds(*obs_, N, P.ey_max, upN, loN);
-        for (int k = 0; k < N; ++k) { ey_upper[k] = upN[k]; ey_lower[k] = loN[k]; }
+        for (int k = 0; k < N; ++k) { ey_upper[k] = upN[k]; ey_lower[k] = loN[k]; printf("ey[%d] in [%.2f, %.2f]\n", k, ey_lower[k], ey_upper[k]);}
+        
     } else {
         for (int k = 0; k < N; ++k) { ey_upper[k] = +P.ey_max; ey_lower[k] = -P.ey_max; }
     }
@@ -156,6 +157,27 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref) {
 
     SparseMatrix<double> H(NZ, NZ);
     H.setFromTriplets(Ht.begin(), Ht.end());
+
+    // state index helpers
+    auto q_add = [&](int k, int i, double w){
+        Ht.emplace_back(idx_x(k,i), idx_x(k,i), 2.0*w);
+    };
+
+    // ---- stage costs on ey, epsi, v ----
+    for (int k=0; k<N; ++k){
+        // (ey_k - ey_ref_k)^2
+        q_add(k, 0, P.wy);
+        g(idx_x(k,0)) -= 2.0 * P.wy * ( (k < (int)ref.ey_ref.size()) ? ref.ey_ref[k] : 0.0 );
+
+        // epsi^2, v tracking (if you have v_ref in ref.hp)
+        q_add(k, 1, P.wpsi);
+        q_add(k, 2, P.wv);
+        // optionally add linear term for v to track ref.hp[k].v_ref similar to ey
+    }
+
+    // ---- terminal ey ----
+    q_add(N, 0, P.wyf);
+    g(idx_x(N,0)) -= 2.0 * P.wyf * ref.ey_ref_N;
 
     // ============================
     // CONSTRAINTS
@@ -252,6 +274,16 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref) {
     l.head(meq) = beq;
     u.head(meq) = beq;
     for (int i=0; i<mineq; ++i) { l(meq+i) = lin_v[i]; u(meq+i) = uin_v[i]; }
+
+    const int expected_ey_rows =
+    // one upper and one lower per step, but only if they’re finite
+    (int)std::count_if(ey_upper.begin(), ey_upper.end(), [](double v){return v < +OSQP_INFTY;}) +
+    (int)std::count_if(ey_lower.begin(), ey_lower.end(), [](double v){return v > -OSQP_INFTY;});
+
+    const int row_after_ey = row;
+    std::cout << "[MPC] ey inequality rows added: " << expected_ey_rows
+            << " (row index now " << row_after_ey << ")\n";
+
 
     // -----------------------------
     // Solve with OSQP

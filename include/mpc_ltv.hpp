@@ -17,7 +17,7 @@ struct MPCParams {
 
     // weights
     double wy    = 0.05;
-    double wpsi  = 0.10;
+    double wpsi  = 0.02;
     double wv    = 0.10;
     double wa    = 0.05;
     double wdd   = 0.10;   // effort on ddelta
@@ -45,6 +45,8 @@ struct PreviewPoint {
 // Horizon preview (your sim fills ref.hp[i].{kappa,v_ref})
 struct MPCRef {
     std::vector<PreviewPoint> hp;  // length N (or >= N)
+    std::vector<double> ey_ref;      // size N+1 (state at k=0..N)
+    double ey_ref_N{0.0};            // terminal, if you prefer separate
 };
 
 // State / Input / Output
