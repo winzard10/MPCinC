@@ -16,7 +16,7 @@ struct MPCParams {
     double L   = 2.7;
 
     // weights
-    double wy    = 0.05;
+    double wy    = 0.20;
     double wpsi  = 0.02;
     double wv    = 0.10;
     double wa    = 0.05;
@@ -33,7 +33,7 @@ struct MPCParams {
     double v_min = 0.0,  v_max = 40.0;
 
     // lateral hard band (also used when no obstacles)
-    double ey_max = 4.0;
+    double ey_max = 10.0;
 };
 
 // Preview point used by your sim
@@ -96,6 +96,9 @@ public:
     // helpers
     static void angleWrap(double& a);
 
+    void setCorridorBounds(const std::vector<double>& lo,
+        const std::vector<double>& up);
+
 private:
     MPCParams P;
 
@@ -109,6 +112,10 @@ private:
         std::vector<MPCState>        x;   // N+1
         std::vector<Eigen::Vector2d> u;   // N
     } nom_;
+
+    std::vector<double> ey_lo_provided_;
+    std::vector<double> ey_up_provided_;
+    bool have_corridor_bounds_{false};
 
     std::optional<MPCObsSet> obs_;        // per-step ey half-spaces
 };

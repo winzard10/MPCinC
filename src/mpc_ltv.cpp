@@ -86,6 +86,17 @@ void LTV_MPC::buildLinearization(const MPCRef& ref) {
     for (int k=0; k<N; ++k) nom_.u[k].setZero();
 }
 
+void LTV_MPC::setCorridorBounds(const std::vector<double>& lo,
+    const std::vector<double>& up) {
+    const int N = P.N;
+    ey_lo_provided_.assign(N, -OSQP_INFTY);
+    ey_up_provided_.assign(N, +OSQP_INFTY);
+    const int steps = std::min<int>(N, std::min(lo.size(), up.size()));
+    for (int i=0; i<steps; ++i) { ey_lo_provided_[i] = lo[i]; ey_up_provided_[i] = up[i]; }
+    have_corridor_bounds_ = true;
+}
+
+
 // ------------------------------------------------------------------
 // solveQP: assemble constraints/cost and solve (first input returned)
 // Uses triplet assembly (no sparse block assignment).
@@ -104,34 +115,55 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref) {
     auto idx_u = [&](int k,int j){ return NX + k*nu + j; };  // NX..NX+NU-1
 
     // -----------------------------
-    // Bounds for ey from obstacles
+    // Bounds for ey (from corridor)
     // -----------------------------
     std::vector<double> ey_upper(N, +OSQP_INFTY);
     std::vector<double> ey_lower(N, -OSQP_INFTY);
-    if (obs_) {
-        std::vector<double> upN, loN;
-        compute_lateral_bounds(*obs_, N, P.ey_max, upN, loN);
-        for (int k = 0; k < N; ++k) { ey_upper[k] = upN[k]; ey_lower[k] = loN[k]; printf("ey[%d] in [%.2f, %.2f]\n", k, ey_lower[k], ey_upper[k]);}
-        
+
+    if (have_corridor_bounds_) {
+        for (int k = 0; k < N; ++k) {
+            double lo = ey_lo_provided_.size() > k ? ey_lo_provided_[k] : -OSQP_INFTY;
+            double up = ey_up_provided_.size() > k ? ey_up_provided_[k] : +OSQP_INFTY;
+
+            // if NaN, treat as unbounded
+            if (!std::isfinite(lo)) lo = -OSQP_INFTY;
+            if (!std::isfinite(up)) up = +OSQP_INFTY;
+
+            ey_lower[k] = lo;
+            ey_upper[k] = up;
+        }
     } else {
-        for (int k = 0; k < N; ++k) { ey_upper[k] = +P.ey_max; ey_lower[k] = -P.ey_max; }
+        // fallback to global road bounds if no corridor provided
+        for (int k = 0; k < N; ++k) {
+            // ey_lower[k] = -P.ey_max;
+            // ey_upper[k] = +P.ey_max;
+            ey_lower[k] = -P.ey_max;
+            ey_upper[k] = +P.ey_max;
+        }
     }
 
     // ============================
     // COST: H (symmetric) and g
     // ============================
     std::vector<Triplet<double>> Ht;
-    Ht.reserve( (NX + NU) * 3 );
+    Ht.reserve( (NX + NU) * 6 );
     VectorXd g = VectorXd::Zero(NZ);
 
-    // stage state costs
+    // stage costs (k = 0..N-1)
     for (int k=0; k<N; ++k){
-        Ht.emplace_back(idx_x(k,0), idx_x(k,0), 2.0 * P.wy);
-        Ht.emplace_back(idx_x(k,1), idx_x(k,1), 2.0 * P.wpsi);
-        Ht.emplace_back(idx_x(k,2), idx_x(k,2), 2.0 * P.wv);
-        // linear term for tracking v_ref -> -2*w*v_ref
         const int idx = std::min<int>(k, (int)ref.hp.size()-1);
-        const double vref = (idx >= 0) ? ref.hp[idx].v_ref : 0.0;
+        const double vref  = (idx >= 0) ? ref.hp[idx].v_ref : 0.0;
+        const double eyref = (k < (int)ref.ey_ref.size()) ? ref.ey_ref[k] : 0.0;
+
+        // (ey_k - eyref)^2
+        Ht.emplace_back(idx_x(k,0), idx_x(k,0), 2.0 * P.wy);
+        g(idx_x(k,0)) += -2.0 * P.wy * eyref;
+
+        // epsi_k^2
+        Ht.emplace_back(idx_x(k,1), idx_x(k,1), 2.0 * P.wpsi);
+
+        // (v_k - vref)^2
+        Ht.emplace_back(idx_x(k,2), idx_x(k,2), 2.0 * P.wv);
         g(idx_x(k,2)) += -2.0 * P.wv * vref;
 
         // input effort
@@ -151,33 +183,16 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref) {
             }
         }
     }
-    // terminal weights
+
+    // terminal ey/epsi
     Ht.emplace_back(idx_x(N,0), idx_x(N,0), 2.0 * P.wyf);
+    g(idx_x(N,0)) += -2.0 * P.wyf * ref.ey_ref_N;
+
     Ht.emplace_back(idx_x(N,1), idx_x(N,1), 2.0 * P.wpsif);
 
+    // finally build H
     SparseMatrix<double> H(NZ, NZ);
     H.setFromTriplets(Ht.begin(), Ht.end());
-
-    // state index helpers
-    auto q_add = [&](int k, int i, double w){
-        Ht.emplace_back(idx_x(k,i), idx_x(k,i), 2.0*w);
-    };
-
-    // ---- stage costs on ey, epsi, v ----
-    for (int k=0; k<N; ++k){
-        // (ey_k - ey_ref_k)^2
-        q_add(k, 0, P.wy);
-        g(idx_x(k,0)) -= 2.0 * P.wy * ( (k < (int)ref.ey_ref.size()) ? ref.ey_ref[k] : 0.0 );
-
-        // epsi^2, v tracking (if you have v_ref in ref.hp)
-        q_add(k, 1, P.wpsi);
-        q_add(k, 2, P.wv);
-        // optionally add linear term for v to track ref.hp[k].v_ref similar to ey
-    }
-
-    // ---- terminal ey ----
-    q_add(N, 0, P.wyf);
-    g(idx_x(N,0)) -= 2.0 * P.wyf * ref.ey_ref_N;
 
     // ============================
     // CONSTRAINTS
@@ -274,15 +289,6 @@ MPCControl LTV_MPC::solveQP(const MPCState& x0, const MPCRef& ref) {
     l.head(meq) = beq;
     u.head(meq) = beq;
     for (int i=0; i<mineq; ++i) { l(meq+i) = lin_v[i]; u(meq+i) = uin_v[i]; }
-
-    const int expected_ey_rows =
-    // one upper and one lower per step, but only if they’re finite
-    (int)std::count_if(ey_upper.begin(), ey_upper.end(), [](double v){return v < +OSQP_INFTY;}) +
-    (int)std::count_if(ey_lower.begin(), ey_lower.end(), [](double v){return v > -OSQP_INFTY;});
-
-    const int row_after_ey = row;
-    std::cout << "[MPC] ey inequality rows added: " << expected_ey_rows
-            << " (row index now " << row_after_ey << ")\n";
 
 
     // -----------------------------

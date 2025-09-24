@@ -4,7 +4,7 @@
 # compile CXX with /usr/bin/c++
 CXX_DEFINES = -DHWY_MPC_INSTALLED_DATA_SUBDIR=\"share/hwy_mpc/data\"
 
-CXX_INCLUDES = -I/home/phurithat/Documents/rob590/hwy_mpc/include
+CXX_INCLUDES = -I/home/phurithat/Documents/rob590/hwy_mpc/include -isystem /usr/include/eigen3
 
 CXX_FLAGS = -O3 -DNDEBUG -Wall -Wextra -Wpedantic -std=c++20
 

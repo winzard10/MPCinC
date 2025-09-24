@@ -29,11 +29,16 @@ public:
         double psi_center{};
         double kappa_center{};
         double v_ref{};
+        double x_center{}, y_center{};
+        double lane_width{};
+        double x_left_border{}, y_left_border{};
+        double x_right_border{}, y_right_border{};
+
     };
 
     // Pose sampled on a lane centerline
     struct LanePose {
-        double x{};     // ≈ s for this dataset
+        double x{};
         double y{};
         double psi{};   // tangent heading
         double kappa{}; // curvature
@@ -89,8 +94,10 @@ private:
     std::vector<double> kappa_;
     std::vector<double> vref_;
 
-    // Derived: road midline y = (yr + yl) / 2
+    std::vector<double> xc_;
     std::vector<double> yc_;
+    std::vector<double> xl_border_, yl_border_;
+    std::vector<double> xr_border_, yr_border_;
 
     // utilities
     std::size_t upper_index(double s) const; // find j with s_[j-1] <= s < s_[j]

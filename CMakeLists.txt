@@ -40,6 +40,7 @@ add_library(centerline STATIC
   src/centerline_map.cpp
 )
 target_include_directories(centerline PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(centerline PUBLIC Eigen3::Eigen) 
 
 # ===== Executable: centerline_demo =====
 add_executable(centerline_demo
