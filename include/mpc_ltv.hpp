@@ -35,7 +35,7 @@ struct MPCParams {
     double ey_up_max = 3.0;
     double ey_lo_max = -3.0;
 
-    double ey_max = 3.0;  // fallback if no corridor provided
+    double ey_max = 1.8;  // fallback if no corridor provided
 };
 
 // Preview point used by your sim

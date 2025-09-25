@@ -3,6 +3,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 static inline double clamp(double x, double a, double b) {
     return std::min(std::max(x, a), b);
@@ -10,7 +11,7 @@ static inline double clamp(double x, double a, double b) {
 
 bool CenterlineMap::load_csv(const std::string& path) {
     s_.clear(); xr_.clear(); yr_.clear(); xl_.clear(); yl_.clear();
-    psi_.clear(); kappa_.clear(); vref_.clear(); xc_.clear(); yc_.clear(); lane_width_.clear();
+    psi_.clear(); kappa_.clear(); vref_.clear(); xc_.clear(); yc_.clear();
     xl_border_.clear(); yl_border_.clear(); xr_border_.clear(); yr_border_.clear();
 
     std::ifstream fin(path);
@@ -32,6 +33,7 @@ bool CenterlineMap::load_csv(const std::string& path) {
         xc_.push_back(v[8]); yc_.push_back(v[9]); lane_width_.push_back(v[10]);
         xl_border_.push_back(v[11]); yl_border_.push_back(v[12]);
         xr_border_.push_back(v[13]); yr_border_.push_back(v[14]);
+        std::cout<< v[10]<< std::endl;
     }
     if (s_.size() < 2) return false;
 
@@ -59,10 +61,24 @@ CenterlineMap::Row CenterlineMap::sample(double s) const {
     double s0 = s_[i], s1 = s_[j];
     double t = (clamp(s, s0, s1) - s0) / (s1 - s0);
     auto L = [t](double a, double b){ return a + t*(b-a); };
-    return {clamp(s, s_.front(), s_.back()),
-            L(xr_[i],xr_[j]), L(yr_[i],yr_[j]),
-            L(xl_[i],xl_[j]), L(yl_[i],yl_[j]),
-            L(psi_[i],psi_[j]), L(kappa_[i],kappa_[j]), L(vref_[i],vref_[j])};
+
+    return {
+        clamp(s, s_.front(), s_.back()),
+        L(xr_[i], xr_[j]),
+        L(yr_[i], yr_[j]),
+        L(xl_[i], xl_[j]),
+        L(yl_[i], yl_[j]),
+        L(psi_[i], psi_[j]),
+        L(kappa_[i], kappa_[j]),
+        L(vref_[i], vref_[j]),
+        L(xc_[i], xc_[j]),       // FIX
+        L(yc_[i], yc_[j]),       // FIX
+        L(lane_width_[i], lane_width_[j]), // FIX
+        L(xl_border_[i], xl_border_[j]),
+        L(yl_border_[i], yl_border_[j]),
+        L(xr_border_[i], xr_border_[j]),
+        L(yr_border_[i], yr_border_[j])
+    };
 }
 
 CenterlineMap::LanePose CenterlineMap::right_lane_at(double s) const {

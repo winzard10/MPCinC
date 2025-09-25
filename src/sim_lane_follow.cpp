@@ -102,7 +102,7 @@ static State stepVehicle(const State& s, const Control& u,
 
 // ---------- Lane pose helpers ----------
 struct LanePose {
-  double x{0}, y{0}, psi{0}, kappa{0}, v_ref{0};
+  double x{0}, y{0}, psi{0}, kappa{0}, v_ref{0}, lane_width{3.7};
 };
 
 static inline LanePose lanePoseAt(const CenterlineMap& map, double s,
@@ -127,20 +127,13 @@ struct Output {
 static inline void buildRawBounds(
     const std::vector<Eigen::Vector2d>& p_ref_h,
     const std::vector<double>&          psi_ref_h,
+    const std::vector<double>&          lane_w_h,
     double t0, double dt,
     const Obstacles& obstacles,
-    double margin, double L_look, double ey_cap,
+    double margin, double L_look,
     std::vector<double>& lo, std::vector<double>& up) {
 
   const int N = static_cast<int>(p_ref_h.size());
-  // lo.assign(N, -ey_cap);
-  // up.assign(N, +ey_cap);
-  // currently assuming a single lane width 3.7m, so ey ∈ [-1.85, +1.85]
-  double LANE_WIDTH = 3.7;
-  double EY_CAP_LEFT = 1.85;
-  double EY_CAP_RIGHT  = -1.85;
-  lo.assign(N, EY_CAP_RIGHT);
-  up.assign(N, EY_CAP_LEFT);
 
   for (int k = 0; k < N; ++k) {
     const double tk  = t0 + (k + 1) * dt;
@@ -156,15 +149,8 @@ static inline void buildRawBounds(
 
       const double ey_obs = dx * nx + dy * ny;  // obstacle lateral offset in THIS FRAME
       
-      if (ey_obs >= 0.0) up[k] = std::min(up[k], EY_CAP_LEFT - LANE_WIDTH/2 + (ey_obs - obs.radius - margin));
-      else               lo[k] = std::max(lo[k], EY_CAP_RIGHT + LANE_WIDTH/2 + (ey_obs + obs.radius + margin));
-
-      std::cout << "k="<<k
-                << " ey_obs=" << ey_obs
-                << " lo=" << lo[k]
-                << " up=" << up[k]
-                << " frame=" << "right"   // e.g. "right", "center", "left"
-                << "\n";
+      if (ey_obs >= 0.0) up[k] = std::min(up[k], up[k] - lane_w_h[k]/2 + (ey_obs - obs.radius - margin));
+      else               lo[k] = std::max(lo[k], lo[k] + lane_w_h[k]/2 + (ey_obs + obs.radius + margin));
     }
 
     if (lo[k] > up[k]) {  // safety clamp
@@ -379,7 +365,10 @@ int main(int argc, char** argv) {
     MPCRef pref; pref.hp.resize(mpcp.N);
     std::vector<Eigen::Vector2d> p_ref_h(mpcp.N);
     std::vector<double>          psi_ref_h(mpcp.N);
+    std::vector<double>          v_ref_h(mpcp.N);
     std::vector<double>          s_grid(mpcp.N);
+    std::vector<CenterlineMap::LaneRef> lane_ref_h(mpcp.N);
+    std::vector<double>          lane_w_h(mpcp.N);
 
     double s_h = projC.s_proj;
     double t_h = t;
@@ -387,26 +376,46 @@ int main(int argc, char** argv) {
     for (int i = 0; i < mpcp.N; ++i) {
       s_grid[i] = s_h;
 
-      LanePose c;  // choose which lane to preview (right → center → left)
-      if (t_h < cli.t_change)          c = lanePoseAt(map, s_h, CenterlineMap::LaneRef::Right);
-      else if (t_h > cli.t_change + cli.T_change)
-                                       c = lanePoseAt(map, s_h, CenterlineMap::LaneRef::Left);
-      else                             c = lanePoseAt(map, s_h, CenterlineMap::LaneRef::Center);
+      CenterlineMap::LaneRef which;
+      if (t_h < cli.t_change) which = CenterlineMap::LaneRef::Right;
+      else if (t_h > cli.t_change + cli.T_change) which = CenterlineMap::LaneRef::Left;
+      else which = CenterlineMap::LaneRef::Center;
 
-      // preview signals for MPC
+      LanePose c = lanePoseAt(map, s_h, which);
+
+      // MPC preview
       pref.hp[i].kappa = c.kappa;
       pref.hp[i].v_ref = c.v_ref;
 
-      // frames for corridor
-      p_ref_h[i]   = Eigen::Vector2d(c.x, c.y);
+      // Corridor frame + metadata
+      p_ref_h[i]   = {c.x, c.y};
       psi_ref_h[i] = c.psi;
+      lane_ref_h[i]= which;
+      lane_w_h[i]  = std::max(0.1, c.lane_width); // guard
 
-      // advance station using v_ref
+      // advance
       const double v_step = std::max(1e-3, c.v_ref);
       s_h = std::min(s_h + v_step * mpcp.dt, map.s_max());
-
-      // advance preview time
       t_h += mpcp.dt;
+    }
+
+    std::vector<double> lo(mpcp.N), up(mpcp.N);
+    for (int i = 0; i < mpcp.N; ++i) {
+      const double w = lane_w_h[i];
+      switch (lane_ref_h[i]) {
+        case CenterlineMap::LaneRef::Right:
+          lo[i] = - (0.5) * w;
+          up[i] = + (0.5) * w;
+          break;
+        case CenterlineMap::LaneRef::Left:
+          lo[i] = - (0.5) * w;
+          up[i] = + (0.5) * w;
+          break;
+        default: // Center
+          lo[i] = - 0.5 * w;
+          up[i] = + 0.5 * w;
+          break;
+      }
     }
 
     // Current state in Frenet error coordinates
@@ -418,10 +427,9 @@ int main(int argc, char** argv) {
     const double L_look = 70.0;  // look-ahead distance for obstacles [m]
     const double slope  = 0.25;  // bound slew per step [m/step]
 
-    std::vector<double> lo_raw, up_raw;
-    corridor::buildRawBounds(p_ref_h, psi_ref_h, t0, mpcp.dt,
-                             obstacles, margin, L_look, mpcp.ey_max,
-                             lo_raw, up_raw);
+    corridor::buildRawBounds(p_ref_h, psi_ref_h, lane_w_h, t0, mpcp.dt,
+                             obstacles, margin, L_look,
+                             lo, up);
 
     corridor::Output cor = corridor::planGraph(s_grid, lo_raw, up_raw, slope);
 
