@@ -32,8 +32,10 @@ struct MPCParams {
     double delta_max  = 0.40;     // steering angle cap [rad]
     double v_min = 0.0,  v_max = 40.0;
 
-    // lateral hard band (also used when no obstacles)
-    double ey_max = 10.0;
+    double ey_up_max = 3.0;
+    double ey_lo_max = -3.0;
+
+    double ey_max = 3.0;  // fallback if no corridor provided
 };
 
 // Preview point used by your sim

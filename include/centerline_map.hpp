@@ -43,6 +43,7 @@ public:
         double psi{};   // tangent heading
         double kappa{}; // curvature
         double v_ref{}; // reference speed
+        double lane_width{};
     };
 
     // Pose sampled on the road midline (between lanes)
@@ -52,6 +53,7 @@ public:
         double psi{};
         double kappa{};
         double v_ref{};
+        double lane_width{};
     };
 
     // Result of projecting a world point onto a chosen reference curve
@@ -96,6 +98,7 @@ private:
 
     std::vector<double> xc_;
     std::vector<double> yc_;
+    std::vector<double> lane_width_;
     std::vector<double> xl_border_, yl_border_;
     std::vector<double> xr_border_, yr_border_;
 

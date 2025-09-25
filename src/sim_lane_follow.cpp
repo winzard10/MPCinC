@@ -108,11 +108,11 @@ struct LanePose {
 static inline LanePose lanePoseAt(const CenterlineMap& map, double s,
                                   CenterlineMap::LaneRef which) {
   if (which == CenterlineMap::LaneRef::Right) {
-    auto r = map.right_lane_at(s); return {r.x, r.y, r.psi, r.kappa, r.v_ref};
+    auto r = map.right_lane_at(s); return {r.x, r.y, r.psi, r.kappa, r.v_ref, r.lane_width};
   } else if (which == CenterlineMap::LaneRef::Left) {
-    auto l = map.left_lane_at(s);  return {l.x, l.y, l.psi, l.kappa, l.v_ref};
+    auto l = map.left_lane_at(s);  return {l.x, l.y, l.psi, l.kappa, l.v_ref, l.lane_width};
   }
-  auto c = map.center_at(s);       return {c.x, c.y, c.psi, c.kappa, c.v_ref};
+  auto c = map.center_at(s);       return {c.x, c.y, c.psi, c.kappa, c.v_ref, c.lane_width};
 }
 
 // ---------- Corridor planner (tighten by obstacles; graph over {lo,mid,up}) ----------

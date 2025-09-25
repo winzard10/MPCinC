@@ -10,7 +10,7 @@ static inline double clamp(double x, double a, double b) {
 
 bool CenterlineMap::load_csv(const std::string& path) {
     s_.clear(); xr_.clear(); yr_.clear(); xl_.clear(); yl_.clear();
-    psi_.clear(); kappa_.clear(); vref_.clear(); xc_.clear(); yc_.clear();
+    psi_.clear(); kappa_.clear(); vref_.clear(); xc_.clear(); yc_.clear(); lane_width_.clear();
     xl_border_.clear(); yl_border_.clear(); xr_border_.clear(); yr_border_.clear();
 
     std::ifstream fin(path);
@@ -24,14 +24,14 @@ bool CenterlineMap::load_csv(const std::string& path) {
         std::stringstream ss(line);
         std::string cell; std::vector<double> v;
         while (std::getline(ss, cell, ',')) v.push_back(cell.empty()? 0.0 : std::stod(cell));
-        if (v.size() < 14) continue;
+        if (v.size() < 15) continue;
 
         s_.push_back(v[0]); xr_.push_back(v[1]); yr_.push_back(v[2]);
         xl_.push_back(v[3]); yl_.push_back(v[4]);
         psi_.push_back(v[5]); kappa_.push_back(v[6]); vref_.push_back(v[7]);
-        xc_.push_back(v[8]); yc_.push_back(v[9]);
-        xl_border_.push_back(v[10]); yl_border_.push_back(v[11]);
-        xr_border_.push_back(v[12]); yr_border_.push_back(v[13]);
+        xc_.push_back(v[8]); yc_.push_back(v[9]); lane_width_.push_back(v[10]);
+        xl_border_.push_back(v[11]); yl_border_.push_back(v[12]);
+        xr_border_.push_back(v[13]); yr_border_.push_back(v[14]);
     }
     if (s_.size() < 2) return false;
 
@@ -43,7 +43,7 @@ bool CenterlineMap::load_csv(const std::string& path) {
 }
 
 CenterlineMap::Row CenterlineMap::row(std::size_t i) const {
-    return {s_[i], xr_[i], yr_[i], xl_[i], yl_[i], psi_[i], kappa_[i], vref_[i], xc_[i], yc_[i],
+    return {s_[i], xr_[i], yr_[i], xl_[i], yl_[i], psi_[i], kappa_[i], vref_[i], xc_[i], yc_[i], lane_width_[i],
             xl_border_[i], yl_border_[i], xr_border_[i], yr_border_[i]};
 }
 
@@ -67,17 +67,17 @@ CenterlineMap::Row CenterlineMap::sample(double s) const {
 
 CenterlineMap::LanePose CenterlineMap::right_lane_at(double s) const {
     auto r = sample(s);
-    return {r.x_right, r.y_right, r.psi_center, r.kappa_center, r.v_ref};
+    return {r.x_right, r.y_right, r.psi_center, r.kappa_center, r.v_ref, r.lane_width};
 }
 
 CenterlineMap::LanePose CenterlineMap::left_lane_at(double s) const {
     auto r = sample(s);
-    return {r.x_left, r.y_left, r.psi_center, r.kappa_center, r.v_ref};
+    return {r.x_left, r.y_left, r.psi_center, r.kappa_center, r.v_ref, r.lane_width};
 }
 
 CenterlineMap::CenterPose CenterlineMap::center_at(double s) const {
     auto r = sample(s);
-    return {r.x_center, r.y_center, r.psi_center, r.kappa_center, r.v_ref};
+    return {r.x_center, r.y_center, r.psi_center, r.kappa_center, r.v_ref, r.lane_width};
 }
 
 // pick which left, right, center curve to project onto
