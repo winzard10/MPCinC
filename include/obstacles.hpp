@@ -41,16 +41,3 @@ struct MPCObsSet {
     // obs[k] = list of half-spaces to apply at step k (k = 0..N-1)
     std::vector<std::vector<ObsIneq>> obs;
 };
-
-// Convert half-spaces for ey into per-step upper/lower bounds.
-//
-// Parameters:
-//  - set:    half-spaces a*ey >= b provided per step (k = 0..K-1)
-//  - N:      number of steps you will enforce (0..N-1)
-//  - ey_cap: clamp to ±ey_cap even if unconstrained
-//  - ey_upper/ey_lower: output resized to N; +inf / -inf when unconstrained
-void compute_lateral_bounds(const MPCObsSet& set,
-                            int N,
-                            double ey_cap,
-                            std::vector<double>& ey_upper,
-                            std::vector<double>& ey_lower);

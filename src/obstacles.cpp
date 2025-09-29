@@ -69,35 +69,3 @@ std::vector<Obstacles::Active> Obstacles::active_at(double t) const {
     }
     return out;
 }
-
-// ---------------------------------------------------------
-// MPC-facing utility: half-spaces → per-step ey bounds
-// ---------------------------------------------------------
-void compute_lateral_bounds(const MPCObsSet& set,
-                            int N,
-                            double ey_cap,
-                            std::vector<double>& ey_upper,
-                            std::vector<double>& ey_lower) {
-    if (N < 0) N = 0;
-    const int K = std::min<int>(N, static_cast<int>(set.obs.size()));
-
-    ey_upper.assign(N, +OSQP_INFTY);
-    ey_lower.assign(N, -OSQP_INFTY);
-
-    for (int k = 0; k < K; ++k) {
-        for (const auto& ineq : set.obs[k]) {
-            const double a = ineq.a, b = ineq.b;
-            if (a > 0.0) { // ey >= b/a
-                ey_lower[k] = std::max(ey_lower[k], b / a);
-            } else if (a < 0.0) { // ey <= b/a
-                ey_upper[k] = std::min(ey_upper[k], b / a);
-            }
-        }
-        ey_upper[k] = std::min(ey_upper[k], +ey_cap);
-        ey_lower[k] = std::max(ey_lower[k], -ey_cap);
-        if (ey_lower[k] > ey_upper[k]) {
-            const double mid = 0.5 * (ey_lower[k] + ey_upper[k]);
-            ey_lower[k] = mid; ey_upper[k] = mid;
-        }
-    }
-}

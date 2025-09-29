@@ -128,6 +128,7 @@ static inline void buildRawBounds(
     const std::vector<Eigen::Vector2d>& p_ref_h,
     const std::vector<double>&          psi_ref_h,
     const std::vector<double>&          lane_w_h,
+    const std::vector<CenterlineMap::LaneRef>& lane_ref_h,
     double t0, double dt,
     const Obstacles& obstacles,
     double margin, double L_look,
@@ -404,6 +405,8 @@ int main(int argc, char** argv) {
       const double w = lane_w_h[i];
       switch (lane_ref_h[i]) {
         case CenterlineMap::LaneRef::Right:
+          // lo[i] = - (0.5) * w;
+          // up[i] = + (0.5) * w;
           lo[i] = - (0.5) * w;
           up[i] = + (0.5) * w;
           break;
@@ -412,8 +415,8 @@ int main(int argc, char** argv) {
           up[i] = + (0.5) * w;
           break;
         default: // Center
-          lo[i] = - 0.5 * w;
-          up[i] = + 0.5 * w;
+          lo[i] = - 0.5*w;
+          up[i] = + 0.5*w;
           break;
       }
     }
@@ -427,11 +430,11 @@ int main(int argc, char** argv) {
     const double L_look = 70.0;  // look-ahead distance for obstacles [m]
     const double slope  = 0.25;  // bound slew per step [m/step]
 
-    corridor::buildRawBounds(p_ref_h, psi_ref_h, lane_w_h, t0, mpcp.dt,
+    corridor::buildRawBounds(p_ref_h, psi_ref_h, lane_w_h, lane_ref_h, t0, mpcp.dt,
                              obstacles, margin, L_look,
                              lo, up);
 
-    corridor::Output cor = corridor::planGraph(s_grid, lo_raw, up_raw, slope);
+    corridor::Output cor = corridor::planGraph(s_grid, lo, up, slope);
 
     pref.ey_ref.resize(mpcp.N + 1);
     for (int i = 0; i < mpcp.N; ++i)
