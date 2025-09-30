@@ -13,6 +13,9 @@ struct Obstacle {
     double vx = 0.0, vy = 0.0;          // velocity if moving [m/s]
     double radius = 0.5;                // safety radius (already includes vehicle inflation)
     double t_start = 0.0, t_end = 1e9;  // active time window [s]
+
+    public:
+    double ey_obs = 0.0;                // lateral offset from centerline at current time [m]
 };
 
 struct Obstacles {
@@ -25,9 +28,8 @@ struct Obstacles {
     std::optional<std::pair<double,double>> position_of(const Obstacle& ob, double t) const;
 
     // Get list of active obstacles at time t with their positions.
-    struct Active { int id; double x; double y; double radius; };
+    struct Active { size_t idx; int id; double x; double y; double radius; double ey_obs; };
     std::vector<Active> active_at(double t) const;
-
     std::vector<Obstacle> items;
 };
 

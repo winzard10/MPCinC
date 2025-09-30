@@ -62,10 +62,11 @@ Obstacles::position_of(const Obstacle& ob, double t) const {
 std::vector<Obstacles::Active> Obstacles::active_at(double t) const {
     std::vector<Active> out;
     out.reserve(items.size());
-    for (const auto& ob : items) {
-        auto p = position_of(ob, t);
-        if (!p) continue;
-        out.push_back(Active{ob.id, p->first, p->second, ob.radius});
+    for (size_t i = 0; i < items.size(); ++i) {
+        const auto &ob = items[i];
+        if (auto p = position_of(ob, t)) {
+            out.push_back(Active{i, ob.id, p->first, p->second, ob.radius, ob.ey_obs});
+        }
     }
     return out;
 }

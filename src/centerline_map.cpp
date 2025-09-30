@@ -33,7 +33,7 @@ bool CenterlineMap::load_csv(const std::string& path) {
         xc_.push_back(v[8]); yc_.push_back(v[9]); lane_width_.push_back(v[10]);
         xl_border_.push_back(v[11]); yl_border_.push_back(v[12]);
         xr_border_.push_back(v[13]); yr_border_.push_back(v[14]);
-        std::cout<< v[10]<< std::endl;
+        // std::cout<< v[10]<< std::endl;
     }
     if (s_.size() < 2) return false;
 

@@ -20,7 +20,8 @@ namespace fs = std::filesystem;
 
 // ---------- Basic types ----------
 struct VehicleParams {
-  double L{2.7};   // wheelbase [m]
+  double L{3.0};   // wheelbase [m]
+  double track_w{1.7}; // track width [m]
   double dt{0.1};  // step [s]
 };
 
@@ -131,6 +132,7 @@ static inline void buildRawBounds(
     const std::vector<CenterlineMap::LaneRef>& lane_ref_h,
     double t0, double dt,
     const Obstacles& obstacles,
+    const double& track_w,
     double margin, double L_look,
     std::vector<double>& lo, std::vector<double>& up) {
 
@@ -140,18 +142,38 @@ static inline void buildRawBounds(
     const double tk  = t0 + (k + 1) * dt;
     const double psi = psi_ref_h[k];
     const double tx  = std::cos(psi), ty = std::sin(psi);
-    const double nx  = -ty,           ny =  tx;  // left-normal
+
+
+    const double lo_k = lo[k];
+    const double up_k = up[k];
 
     for (const auto& obs : obstacles.active_at(tk)) {
       const double dx = obs.x - p_ref_h[k].x();
       const double dy = obs.y - p_ref_h[k].y();
       const double ds = dx * tx + dy * ty;               // along-lane
-      if (ds < -2.0 || ds > L_look) continue;
+      if (ds < -L_look/3.0 || ds > L_look) continue;
 
-      const double ey_obs = dx * nx + dy * ny;  // obstacle lateral offset in THIS FRAME
-      
-      if (ey_obs >= 0.0) up[k] = std::min(up[k], up[k] - lane_w_h[k]/2 + (ey_obs - obs.radius - margin));
-      else               lo[k] = std::max(lo[k], lo[k] + lane_w_h[k]/2 + (ey_obs + obs.radius + margin));
+      double ey_obs = obstacles.items[obs.idx].ey_obs;
+
+      if (lane_ref_h[k] == CenterlineMap::LaneRef::Right) {
+        if (ey_obs <= 0.0) lo[k] = std::max(lo[k], lo_k + lane_w_h[k]/2 + (ey_obs + obs.radius + track_w/2.0 + margin));
+        else {
+          if (ey_obs >= lane_w_h[k]/2.0) {up[k] = std::min(up[k], lo_k+ lane_w_h[k]/2.0 +(ey_obs-obs.radius-track_w/2.0 - margin));}
+          else if (lane_w_h[k]/2.0 > -(ey_obs - obs.radius - track_w - margin)) {up[k] = std::min(up[k], up_k - 3.0*lane_w_h[k]/2.0 + (ey_obs - obs.radius - track_w/2.0 - margin));}
+          else {lo[k] = std::max(lo[k], lo_k + lane_w_h[k]/2.0 + (ey_obs + obs.radius + track_w/2.0 + margin));}
+        }
+            
+      } else if (lane_ref_h[k] == CenterlineMap::LaneRef::Left) {
+          if (ey_obs >= 0.0)  up[k] = std::min(up[k], up_k - lane_w_h[k]/2 + (ey_obs - obs.radius - track_w/2.0 - margin));
+          else { 
+            if (ey_obs <= -lane_w_h[k]/2.0) {lo[k] = std::max(lo[k], up_k - lane_w_h[k]/2.0 + (ey_obs + obs.radius + track_w/2.0 + margin));  }
+            else if (lane_w_h[k]/2.0 > ey_obs + obs.radius + track_w + margin) {lo[k] = std::max(lo[k], lo_k + 3.0*lane_w_h[k]/2.0 + (ey_obs + obs.radius + track_w/2.0 + margin)); }
+            else { up[k] = std::min(up[k], up_k - lane_w_h[k]/2.0 + (ey_obs - obs.radius - track_w/2.0 - margin)); }
+          }
+      } else { 
+          if (ey_obs >= 0.0) up[k] = std::min(up[k], up_k + (ey_obs - obs.radius - track_w/2.0 - margin));
+          else               lo[k] = std::max(lo[k], lo_k + (ey_obs + obs.radius + track_w/2.0 + margin));
+      }
     }
 
     if (lo[k] > up[k]) {  // safety clamp
@@ -285,6 +307,23 @@ static void parseCLI(int argc, char** argv, CLI& cli) {
   }
 }
 
+// Compute lateral offset (ey) of a point (x,y) from the centerline
+double lateralOffsetFromCenterline(const CenterlineMap& map, double x, double y, CenterlineMap::LaneRef which) {
+  // Project obstacle position onto centerline
+  auto proj = map.project(x, y);    // expects .s_proj, .x_ref, .y_ref, .psi, etc.
+
+  LanePose cref = lanePoseAt(map, proj.s_proj, which);
+
+  // Normal vector to centerline heading (left-positive)
+  const double nx = -std::sin(cref.psi);
+  const double ny =  std::cos(cref.psi);
+
+  // Lateral offset (dot product with normal)
+  const double ey = (x - cref.x) * nx + (y - cref.y) * ny;
+  return ey;
+}
+
+
 // ---------- Main ----------
 int main(int argc, char** argv) {
   // --- CLI ---
@@ -393,6 +432,12 @@ int main(int argc, char** argv) {
       psi_ref_h[i] = c.psi;
       lane_ref_h[i]= which;
       lane_w_h[i]  = std::max(0.1, c.lane_width); // guard
+      
+      for (const auto &a : obstacles.active_at(t)) {
+        double ey = lateralOffsetFromCenterline(map, a.x, a.y, which);
+        obstacles.items[a.idx].ey_obs = ey;  // write back to the real object
+        // std::cout << "obs id: " << a.id << ", ey_obs: " << ey << "\n";
+      }
 
       // advance
       const double v_step = std::max(1e-3, c.v_ref);
@@ -408,15 +453,16 @@ int main(int argc, char** argv) {
           // lo[i] = - (0.5) * w;
           // up[i] = + (0.5) * w;
           lo[i] = - (0.5) * w;
-          up[i] = + (0.5) * w;
+          up[i] = + (1.5) * w;
+          // printf("lane_w: %f, lo: %f, up: %f\n", w, lo[i], up[i]);
           break;
         case CenterlineMap::LaneRef::Left:
-          lo[i] = - (0.5) * w;
+          lo[i] = - (1.5) * w;
           up[i] = + (0.5) * w;
           break;
         default: // Center
-          lo[i] = - 0.5*w;
-          up[i] = + 0.5*w;
+          lo[i] = - w;
+          up[i] = + w;
           break;
       }
     }
@@ -431,7 +477,7 @@ int main(int argc, char** argv) {
     const double slope  = 0.25;  // bound slew per step [m/step]
 
     corridor::buildRawBounds(p_ref_h, psi_ref_h, lane_w_h, lane_ref_h, t0, mpcp.dt,
-                             obstacles, margin, L_look,
+                             obstacles, vp.track_w, margin, L_look,
                              lo, up);
 
     corridor::Output cor = corridor::planGraph(s_grid, lo, up, slope);
