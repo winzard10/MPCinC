@@ -1,6 +1,7 @@
 #include "centerline_map.hpp"
 #include "mpc_ltv.hpp"
 #include "obstacles.hpp"
+#include "corridor_planner.hpp"
 
 #include <Eigen/Dense>
 
@@ -116,170 +117,21 @@ static inline LanePose lanePoseAt(const CenterlineMap& map, double s,
   auto c = map.center_at(s);       return {c.x, c.y, c.psi, c.kappa, c.v_ref, c.lane_width};
 }
 
-// ---------- Corridor planner (tighten by obstacles; graph over {lo,mid,up}) ----------
-namespace corridor {
+// Compute lateral offset (ey) of a point (x,y) from the centerline
+double lateralOffsetFromCenterline(const CenterlineMap& map, double x, double y, CenterlineMap::LaneRef which) {
+  // Project obstacle position onto centerline
+  auto proj = map.project(x, y);    // expects .s_proj, .x_ref, .y_ref, .psi, etc.
 
-struct Output {
-  std::vector<double> lo, up;    // corridor bounds per step
-  std::vector<double> ey_ref;    // chosen center/path per step
-};
+  LanePose cref = lanePoseAt(map, proj.s_proj, which);
 
-// Build raw lateral bounds [lo, up] by sweeping obstacles (disks inflated by margin)
-static inline void buildRawBounds(
-    const std::vector<Eigen::Vector2d>& p_ref_h,
-    const std::vector<double>&          psi_ref_h,
-    const std::vector<double>&          lane_w_h,
-    const std::vector<CenterlineMap::LaneRef>& lane_ref_h,
-    double t0, double dt,
-    const Obstacles& obstacles,
-    const double& track_w,
-    double margin, double L_look,
-    std::vector<double>& lo, std::vector<double>& up) {
+  // Normal vector to centerline heading (left-positive)
+  const double nx = -std::sin(cref.psi);
+  const double ny =  std::cos(cref.psi);
 
-  const int N = static_cast<int>(p_ref_h.size());
-
-  for (int k = 0; k < N; ++k) {
-    const double tk  = t0 + (k + 1) * dt;
-    const double psi = psi_ref_h[k];
-    const double tx  = std::cos(psi), ty = std::sin(psi);
-
-
-    const double lo_k = lo[k];
-    const double up_k = up[k];
-
-    for (const auto& obs : obstacles.active_at(tk)) {
-      const double dx = obs.x - p_ref_h[k].x();
-      const double dy = obs.y - p_ref_h[k].y();
-      const double ds = dx * tx + dy * ty;               // along-lane
-      if (ds < -L_look/3.0 || ds > L_look) continue;
-
-      double ey_obs = obstacles.items[obs.idx].ey_obs;
-
-      if (lane_ref_h[k] == CenterlineMap::LaneRef::Right) {
-        if (ey_obs <= 0.0) lo[k] = std::max(lo[k], lo_k + lane_w_h[k]/2 + (ey_obs + obs.radius + track_w/2.0 + margin));
-        else {
-          if (ey_obs >= lane_w_h[k]/2.0) {up[k] = std::min(up[k], lo_k+ lane_w_h[k]/2.0 +(ey_obs-obs.radius-track_w/2.0 - margin));}
-          else if (lane_w_h[k]/2.0 > -(ey_obs - obs.radius - track_w - margin)) {up[k] = std::min(up[k], up_k - 3.0*lane_w_h[k]/2.0 + (ey_obs - obs.radius - track_w/2.0 - margin));}
-          else {lo[k] = std::max(lo[k], lo_k + lane_w_h[k]/2.0 + (ey_obs + obs.radius + track_w/2.0 + margin));}
-        }
-            
-      } else if (lane_ref_h[k] == CenterlineMap::LaneRef::Left) {
-          if (ey_obs >= 0.0)  up[k] = std::min(up[k], up_k - lane_w_h[k]/2 + (ey_obs - obs.radius - track_w/2.0 - margin));
-          else { 
-            if (ey_obs <= -lane_w_h[k]/2.0) {lo[k] = std::max(lo[k], up_k - lane_w_h[k]/2.0 + (ey_obs + obs.radius + track_w/2.0 + margin));  }
-            else if (lane_w_h[k]/2.0 > ey_obs + obs.radius + track_w + margin) {lo[k] = std::max(lo[k], lo_k + 3.0*lane_w_h[k]/2.0 + (ey_obs + obs.radius + track_w/2.0 + margin)); }
-            else { up[k] = std::min(up[k], up_k - lane_w_h[k]/2.0 + (ey_obs - obs.radius - track_w/2.0 - margin)); }
-          }
-      } else { 
-          if (ey_obs >= 0.0) up[k] = std::min(up[k], up_k + (ey_obs - obs.radius - track_w/2.0 - margin));
-          else               lo[k] = std::max(lo[k], lo_k + (ey_obs + obs.radius + track_w/2.0 + margin));
-      }
-    }
-
-    if (lo[k] > up[k]) {  // safety clamp
-      const double mid = 0.5 * (lo[k] + up[k]);
-      lo[k] = up[k] = mid;
-    }
-  }
+  // Lateral offset (dot product with normal)
+  const double ey = (x - cref.x) * nx + (y - cref.y) * ny;
+  return ey;
 }
-
-// simple temporal smoothing (slew-rate limit on bounds)
-static inline void smoothBounds(std::vector<double>& lo,
-                                std::vector<double>& up,
-                                double slope_per_step) {
-  const int N = static_cast<int>(lo.size());
-  for (int k = 1; k < N; ++k) {
-    lo[k] = std::max(lo[k], lo[k - 1] - slope_per_step);
-    up[k] = std::min(up[k], up[k - 1] + slope_per_step);
-    if (lo[k] > up[k]) { const double m = 0.5 * (lo[k] + up[k]); lo[k] = up[k] = m; }
-  }
-  for (int k = N - 2; k >= 0; --k) {
-    lo[k] = std::max(lo[k], lo[k + 1] - slope_per_step);
-    up[k] = std::min(up[k], up[k + 1] + slope_per_step);
-    if (lo[k] > up[k]) { const double m = 0.5 * (lo[k] + up[k]); lo[k] = up[k] = m; }
-  }
-}
-
-// check straight segment (i, ey_i) → (j, ey_j) stays inside [lo,up]
-static inline bool segmentInside(const std::vector<double>& lo,
-                                 const std::vector<double>& up,
-                                 int i, int j, double ey_i, double ey_j) {
-  if (j <= i) return false;
-  const int len = j - i;
-  for (int m = i; m <= j; ++m) {
-    const double tau = static_cast<double>(m - i) / static_cast<double>(len);
-    const double ey  = (1.0 - tau) * ey_i + tau * ey_j;
-    if (ey < lo[m] - 1e-6 || ey > up[m] + 1e-6) return false;
-  }
-  return true;
-}
-
-static inline Output planGraph(
-    const std::vector<double>& s_grid,     // centerline s per step (monotone)
-    const std::vector<double>& lo_raw,
-    const std::vector<double>& up_raw,
-    double slope_per_step) {
-
-  const int N = static_cast<int>(s_grid.size());
-
-  // 1) smooth the bounds
-  std::vector<double> lo = lo_raw, up = up_raw;
-  smoothBounds(lo, up, slope_per_step);
-
-  // 2) layered graph over {lo, mid, up}
-  auto mid = [&](int k) { return 0.5 * (lo[k] + up[k]); };
-  constexpr int C = 3; // candidates: 0=lo, 1=mid, 2=up
-
-  auto eyOf = [&](int k, int c) -> double {
-    return (c == 0) ? lo[k] : ((c == 1) ? mid(k) : up[k]);
-  };
-
-  struct Node { double cost; int prev_k; int prev_c; };
-  std::vector<std::array<Node, C>> best(N);
-  for (int c = 0; c < C; ++c) best[0][c] = {0.0, -1, -1};
-
-  for (int k = 0; k < N - 1; ++k) {
-    for (int c = 0; c < C; ++c) {
-      const double ey_k = eyOf(k, c);
-      const double base = best[k][c].cost;
-      if (!std::isfinite(base)) continue;
-
-      for (int kp = k + 1; kp < N; ++kp) {
-        const double ds = std::max(1e-3, s_grid[kp] - s_grid[k]);
-        for (int cp = 0; cp < C; ++cp) {
-          const double ey_kp = eyOf(kp, cp);
-          if (!segmentInside(lo, up, k, kp, ey_k, ey_kp)) continue;
-
-          const double dtheta = std::atan2(ey_kp - ey_k, ds);  // heading change proxy
-          const double cost   = base + std::abs(dtheta);
-
-          if (best[kp][cp].prev_k < 0 || cost < best[kp][cp].cost) {
-            best[kp][cp] = {cost, k, c};
-          }
-        }
-      }
-    }
-  }
-
-  // 3) pick best terminal & backtrack ey_ref
-  int kf = N - 1, cf = 0;
-  for (int c = 1; c < C; ++c)
-    if (best[kf][c].prev_k >= 0 && best[kf][c].cost < best[kf][cf].cost) cf = c;
-
-  std::vector<double> ey_ref(N);
-  int k = kf, c = cf;
-  while (k >= 0) {
-    ey_ref[k] = eyOf(k, c);
-    const int pk = best[k][c].prev_k, pc = best[k][c].prev_c;
-    if (pk < 0) break;
-    k = pk; c = pc;
-  }
-  for (int i = 0; i < k; ++i) ey_ref[i] = ey_ref[k];  // fill leading holes (safety)
-
-  return {std::move(lo), std::move(up), std::move(ey_ref)};
-}
-
-} // namespace corridor
 
 // ---------- CLI parsing ----------
 static void parseCLI(int argc, char** argv, CLI& cli) {
@@ -306,23 +158,6 @@ static void parseCLI(int argc, char** argv, CLI& cli) {
     }
   }
 }
-
-// Compute lateral offset (ey) of a point (x,y) from the centerline
-double lateralOffsetFromCenterline(const CenterlineMap& map, double x, double y, CenterlineMap::LaneRef which) {
-  // Project obstacle position onto centerline
-  auto proj = map.project(x, y);    // expects .s_proj, .x_ref, .y_ref, .psi, etc.
-
-  LanePose cref = lanePoseAt(map, proj.s_proj, which);
-
-  // Normal vector to centerline heading (left-positive)
-  const double nx = -std::sin(cref.psi);
-  const double ny =  std::cos(cref.psi);
-
-  // Lateral offset (dot product with normal)
-  const double ey = (x - cref.x) * nx + (y - cref.y) * ny;
-  return ey;
-}
-
 
 // ---------- Main ----------
 int main(int argc, char** argv) {
@@ -382,15 +217,24 @@ int main(int argc, char** argv) {
   for (int k = 0; k <= steps; ++k) {
     const double t = k * vp.dt;
 
-    // Project current pose to centerline for reference heading
+    // Project current pose to centerline for reference heading (almost not relevant anymore)
     auto projC = map.project(st.x, st.y);     // expects .s_proj and .x_ref etc.
     auto cref  = map.center_at(projC.s_proj);
-    const double psi_ref = cref.psi;
+    // const double psi_ref = cref.psi;
 
     // Lane-change blend for target XY (interpolate between lanes)
     const double alpha = smoothstep01((t - cli.t_change) / cli.T_change);
     LanePose fromP = lanePoseAt(map, projC.s_proj, cli.lane_from);
     LanePose toP   = lanePoseAt(map, projC.s_proj, cli.lane_to);
+
+    auto blendYaw = [](double psi1, double psi2, double a) {
+      // Wrap difference to (-pi, pi]
+      const double d = std::atan2(std::sin(psi2 - psi1), std::cos(psi2 - psi1));
+      return psi1 + a * d;
+  };
+  
+    // Blended reference heading for the lane-change path
+    const double psi_ref = blendYaw(fromP.psi, toP.psi, alpha);
     const double x_ref = (1.0 - alpha) * fromP.x + alpha * toP.x;
     const double y_ref = (1.0 - alpha) * fromP.y + alpha * toP.y;
 
@@ -436,7 +280,6 @@ int main(int argc, char** argv) {
       for (const auto &a : obstacles.active_at(t)) {
         double ey = lateralOffsetFromCenterline(map, a.x, a.y, which);
         obstacles.items[a.idx].ey_obs = ey;  // write back to the real object
-        // std::cout << "obs id: " << a.id << ", ey_obs: " << ey << "\n";
       }
 
       // advance
@@ -450,11 +293,8 @@ int main(int argc, char** argv) {
       const double w = lane_w_h[i];
       switch (lane_ref_h[i]) {
         case CenterlineMap::LaneRef::Right:
-          // lo[i] = - (0.5) * w;
-          // up[i] = + (0.5) * w;
           lo[i] = - (0.5) * w;
           up[i] = + (1.5) * w;
-          // printf("lane_w: %f, lo: %f, up: %f\n", w, lo[i], up[i]);
           break;
         case CenterlineMap::LaneRef::Left:
           lo[i] = - (1.5) * w;

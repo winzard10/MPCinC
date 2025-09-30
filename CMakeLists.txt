@@ -76,6 +76,22 @@ target_include_directories(obstacles PUBLIC
 # Link it into the sim
 target_link_libraries(sim_lane_follow PRIVATE obstacles)
 
+# ===== Library: corridor_planner =====
+add_library(corridor_planner STATIC
+  src/corridor_planner.cpp
+)
+
+# Make the header(s) visible to anything that links against it
+target_include_directories(corridor_planner PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Corridor planner depends on Eigen
+target_link_libraries(corridor_planner PUBLIC Eigen3::Eigen)
+
+# Link it into the sim
+target_link_libraries(sim_lane_follow PRIVATE corridor_planner)
+
 # ===== Data handling =====
 set(HWY_MPC_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 

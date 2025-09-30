@@ -226,6 +226,19 @@ obstacles/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/obstacles.dir/build.make CMakeFiles/obstacles.dir/build
 .PHONY : obstacles/fast
 
+#=============================================================================
+# Target rules for targets named corridor_planner
+
+# Build rule for target.
+corridor_planner: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 corridor_planner
+.PHONY : corridor_planner
+
+# fast build rule for target.
+corridor_planner/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/corridor_planner.dir/build.make CMakeFiles/corridor_planner.dir/build
+.PHONY : corridor_planner/fast
+
 src/centerline_map.o: src/centerline_map.cpp.o
 .PHONY : src/centerline_map.o
 
@@ -249,6 +262,30 @@ src/centerline_map.s: src/centerline_map.cpp.s
 src/centerline_map.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/centerline.dir/build.make CMakeFiles/centerline.dir/src/centerline_map.cpp.s
 .PHONY : src/centerline_map.cpp.s
+
+src/corridor_planner.o: src/corridor_planner.cpp.o
+.PHONY : src/corridor_planner.o
+
+# target to build an object file
+src/corridor_planner.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/corridor_planner.dir/build.make CMakeFiles/corridor_planner.dir/src/corridor_planner.cpp.o
+.PHONY : src/corridor_planner.cpp.o
+
+src/corridor_planner.i: src/corridor_planner.cpp.i
+.PHONY : src/corridor_planner.i
+
+# target to preprocess a source file
+src/corridor_planner.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/corridor_planner.dir/build.make CMakeFiles/corridor_planner.dir/src/corridor_planner.cpp.i
+.PHONY : src/corridor_planner.cpp.i
+
+src/corridor_planner.s: src/corridor_planner.cpp.s
+.PHONY : src/corridor_planner.s
+
+# target to generate assembly for a file
+src/corridor_planner.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/corridor_planner.dir/build.make CMakeFiles/corridor_planner.dir/src/corridor_planner.cpp.s
+.PHONY : src/corridor_planner.cpp.s
 
 src/demo_centerline.o: src/demo_centerline.cpp.o
 .PHONY : src/demo_centerline.o
@@ -360,12 +397,16 @@ help:
 	@echo "... rebuild_cache"
 	@echo "... centerline"
 	@echo "... centerline_demo"
+	@echo "... corridor_planner"
 	@echo "... mpc"
 	@echo "... obstacles"
 	@echo "... sim_lane_follow"
 	@echo "... src/centerline_map.o"
 	@echo "... src/centerline_map.i"
 	@echo "... src/centerline_map.s"
+	@echo "... src/corridor_planner.o"
+	@echo "... src/corridor_planner.i"
+	@echo "... src/corridor_planner.s"
 	@echo "... src/demo_centerline.o"
 	@echo "... src/demo_centerline.i"
 	@echo "... src/demo_centerline.s"
